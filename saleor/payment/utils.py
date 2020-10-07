@@ -181,6 +181,7 @@ def create_transaction(
         customer_id=gateway_response.customer_id,
         gateway_response=gateway_response.raw_response or {},
         action_required_data=gateway_response.action_required_data or {},
+        searchable_key=gateway_response.searchable_key or "",
     )
     return txn
 
@@ -194,9 +195,9 @@ def get_already_processed_transaction_or_create_new_transaction(
     error_msg=None,
 ) -> Transaction:
     if gateway_response and gateway_response.transaction_already_processed:
-        transaction = get_already_processed_transaction(payment, gateway_response)
-        if transaction:
-            return transaction
+        txn = get_already_processed_transaction(payment, gateway_response)
+        if txn:
+            return txn
     return create_transaction(
         payment,
         kind,

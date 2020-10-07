@@ -12,6 +12,19 @@ All notable, unreleased changes to this project will be documented in this file.
 - Invoices backend - #5732 by @tomaszszymanski129
 - Support pushing webhook events to message queues - #5940 by @patrys, @korycins
 - Adyen drop-in integration - #5914 by @korycins, @IKarbowiak
+- Add `change_currency` command - #6016 by @maarcingebala
+- Send a confirmation email when the order is canceled or refunded - #6017
+- Add `TotalPrice` to `OrderLine` - #6068 @fowczarek
+- No secure cookie in debug mode - #6082 by @patrys, @orzechdev
+- Add searchable and available for purchase flags to product - #6060 by @IKarbowiak
+- Add `PRODUCT_UPDATED` webhook event - #6100 by @tomaszszymanski129
+- Search orders by graphql PaymentID - #6135 by @korycins
+- Search orders by custom key provided by payment gateway - #6135 by @korycins
+- Default product variant - #6140 by @tomaszszymanski129
+- Allow product variants to be sortable - #6138 by @tomaszszymanski129
+- Staff with only manage_orders should be able to query all stock related date. - #6139 by @fowczarek
+- Add filtering to `ProductVariants` query and option to fetch variant by sku in `ProductVariant` query - #6190 by @fowczarek
+
 
 ### Breaking Changes
 
@@ -36,6 +49,26 @@ All notable, unreleased changes to this project will be documented in this file.
 - Update google merchant to get tax rate based by plugin manager - #5823 by @gabmartinez
 - Allow unicode in slug fields - #5877 by @IKarbowiak
 - Fix empty plugin object result after PluginUpdate mutation - #5968 by @gabmartinez
+- Allow to finish checkout when price amount is 0 - #6064 by @IKarbowiak
+- Fix incorrect tax calculation for Avatax - #6035 by @korycins
+- Fix incorrect calculation of subtotal with active Avatax - #6035 by @korycins
+- Fix incorrect assigment of tax_code for Avatax - #6035 by @korycins
+- Do not allow negative product price - #6091 by @IKarbowiak
+- Handle None as attribute value - #6092 by @IKarbowiak
+- Fix for calling order_created before the order was saved - #6095 by @korycins
+- Update default decimal places - #6098 by @IKarbowiak
+- Avoid assigning the same pictures twice to a variant - #6112 by @IKarbowiak
+- Fix crashing system when avalara is improperly configured - #6117 by @IKarbowiak
+- Fix for failing finalising draft order - #6133 by @korycins
+- Remove corresponding draft order lines when variant is removing - #6119 by @IKarbowiak
+- Update required perms for apps management - #6173 by @IKarbowiak
+- Raise an error for an empty key in metadata - #6176 by @IKarbowiak
+- Add attributes to product error - #6181 by @IKarbowiak
+- Allow to add product variant with 0 price to draft order - #6189 by @IKarbowiak
+- Fix deleting product when default variant is deleted - #6186 by @IKarbowiak
+- Fix get unpublished products, product variants and collection as app - #6194 by @fowczarek
+- Set OrderFulfillStockInput fields as required - #6196 by @IKarbowiak
+- Fix attribute filtering by categories and collections - #6214 by @fowczarek
 
 ## 2.10.2
 

@@ -253,7 +253,10 @@ class BasePlugin:
         return NotImplemented
 
     def assign_tax_code_to_object_meta(
-        self, obj: Union["Product", "ProductType"], tax_code: str, previous_value: Any
+        self,
+        obj: Union["Product", "ProductType"],
+        tax_code: Optional[str],
+        previous_value: Any,
     ):
         """Assign tax code dedicated to plugin."""
         return NotImplemented
@@ -286,6 +289,14 @@ class BasePlugin:
 
         Overwrite this method if you need to trigger specific logic after a product is
         created.
+        """
+        return NotImplemented
+
+    def product_updated(self, product: "Product", previous_value: Any) -> Any:
+        """Trigger when product is updated.
+
+        Overwrite this method if you need to trigger specific logic after a product is
+        updated.
         """
         return NotImplemented
 

@@ -412,7 +412,7 @@ type Attribute implements Node & ObjectWithMetadata {
 type AttributeAssign {
   errors: [Error!]! @deprecated(reason: "Use typed errors with error codes. This field will be removed after 2020-07-31.")
   productType: ProductType
-  productErrors: [ProductAttributeError!]!
+  productErrors: [ProductError!]!
 }
 
 input AttributeAssignInput {
@@ -688,6 +688,7 @@ type BulkProductError {
   field: String
   message: String
   code: ProductErrorCode!
+  attributes: [ID!]
   index: Int
   warehouses: [ID!]
 }
@@ -696,6 +697,7 @@ type BulkStockError {
   field: String
   message: String
   code: ProductErrorCode!
+  attributes: [ID!]
   index: Int
 }
 
@@ -948,6 +950,7 @@ type CheckoutError {
   field: String
   message: String
   code: CheckoutErrorCode!
+  variants: [ID!]
 }
 
 enum CheckoutErrorCode {
@@ -955,6 +958,7 @@ enum CheckoutErrorCode {
   CHECKOUT_NOT_FULLY_PAID
   GRAPHQL_ERROR
   PRODUCT_NOT_PUBLISHED
+  PRODUCT_UNAVAILABLE_FOR_PURCHASE
   INSUFFICIENT_STOCK
   INVALID
   INVALID_SHIPPING_METHOD
@@ -1070,7 +1074,7 @@ type Collection implements Node & ObjectWithMetadata {
   metadata: [MetadataItem]!
   privateMeta: [MetaStore]! @deprecated(reason: "Use the `privetaMetadata` field. This field will be removed after 2020-07-31.")
   meta: [MetaStore]! @deprecated(reason: "Use the `metadata` field. This field will be removed after 2020-07-31.")
-  products(before: String, after: String, first: Int, last: Int): ProductCountableConnection
+  products(filter: ProductFilterInput, sortBy: ProductOrder, before: String, after: String, first: Int, last: Int): ProductCountableConnection
   backgroundImage(size: Int): Image
   translation(languageCode: LanguageCodeEnum!): CollectionTranslation
 }
@@ -1628,8 +1632,6 @@ type DeactivateAllUserTokens {
   accountErrors: [AccountError!]!
 }
 
-scalar Decimal
-
 type DeleteMetadata {
   errors: [Error!]! @deprecated(reason: "Use typed errors with error codes. This field will be removed after 2020-07-31.")
   metadataErrors: [MetadataError!]!
@@ -1776,7 +1778,7 @@ input DraftOrderCreateInput {
   billingAddress: AddressInput
   user: ID
   userEmail: String
-  discount: Decimal
+  discount: PositiveDecimal
   shippingAddress: AddressInput
   shippingMethod: ID
   voucher: ID
@@ -1794,7 +1796,7 @@ input DraftOrderInput {
   billingAddress: AddressInput
   user: ID
   userEmail: String
-  discount: Decimal
+  discount: PositiveDecimal
   shippingAddress: AddressInput
   shippingMethod: ID
   voucher: ID
@@ -2062,7 +2064,7 @@ type GiftCardCreate {
 input GiftCardCreateInput {
   startDate: Date
   endDate: Date
-  balance: Decimal
+  balance: PositiveDecimal
   userEmail: String
   code: String
 }
@@ -2097,7 +2099,7 @@ type GiftCardUpdate {
 input GiftCardUpdateInput {
   startDate: Date
   endDate: Date
-  balance: Decimal
+  balance: PositiveDecimal
   userEmail: String
 }
 
@@ -2249,9 +2251,11 @@ enum LanguageCodeEnum {
   IS
   IT
   JA
+  KM
   KO
   LT
   MN
+  MY
   NB
   NL
   PL
@@ -2530,6 +2534,7 @@ enum MetadataErrorCode {
   GRAPHQL_ERROR
   INVALID
   NOT_FOUND
+  REQUIRED
 }
 
 input MetadataInput {
@@ -2636,7 +2641,9 @@ type Mutation {
   productClearMetadata(id: ID!, input: MetaPath!): ProductClearMeta @deprecated(reason: "Use the `deleteMetadata` mutation instead. This field will be removed after 2020-07-31.")
   productUpdatePrivateMetadata(id: ID!, input: MetaInput!): ProductUpdatePrivateMeta @deprecated(reason: "Use the `updatePrivateMetadata` mutation instead. This field will be removed after 2020-07-31.")
   productClearPrivateMetadata(id: ID!, input: MetaPath!): ProductClearPrivateMeta @deprecated(reason: "Use the `deletePrivateMetadata` mutation instead. This field will be removed after 2020-07-31.")
+  productSetAvailabilityForPurchase(isAvailable: Boolean!, productId: ID!, startDate: Date): ProductSetAvailabilityForPurchase
   productImageCreate(input: ProductImageCreateInput!): ProductImageCreate
+  productVariantReorder(moves: [ReorderInput]!, productId: ID!): ProductVariantReorder
   productImageDelete(id: ID!): ProductImageDelete
   productImageBulkDelete(ids: [ID]!): ProductImageBulkDelete
   productImageReorder(imagesIds: [ID]!, productId: ID!): ProductImageReorder
@@ -2662,6 +2669,7 @@ type Mutation {
   productVariantStocksDelete(variantId: ID!, warehouseIds: [ID!]): ProductVariantStocksDelete
   productVariantStocksUpdate(stocks: [StockInput!]!, variantId: ID!): ProductVariantStocksUpdate
   productVariantUpdate(id: ID!, input: ProductVariantInput!): ProductVariantUpdate
+  productVariantSetDefault(productId: ID!, variantId: ID!): ProductVariantSetDefault
   productVariantTranslate(id: ID!, input: NameTranslationInput!, languageCode: LanguageCodeEnum!): ProductVariantTranslate
   productVariantUpdateMetadata(id: ID!, input: MetaInput!): ProductVariantUpdateMeta @deprecated(reason: "Use the `updateMetadata` mutation instead. This field will be removed after 2020-07-31.")
   productVariantClearMetadata(id: ID!, input: MetaPath!): ProductVariantClearMeta @deprecated(reason: "Use the `deleteMetadata` mutation instead. This field will be removed after 2020-07-31.")
@@ -2669,8 +2677,8 @@ type Mutation {
   productVariantClearPrivateMetadata(id: ID!, input: MetaPath!): ProductVariantClearPrivateMeta @deprecated(reason: "Use the `deletePrivateMetadata` mutation instead. This field will be removed after 2020-07-31.")
   variantImageAssign(imageId: ID!, variantId: ID!): VariantImageAssign
   variantImageUnassign(imageId: ID!, variantId: ID!): VariantImageUnassign
-  paymentCapture(amount: Decimal, paymentId: ID!): PaymentCapture
-  paymentRefund(amount: Decimal, paymentId: ID!): PaymentRefund
+  paymentCapture(amount: PositiveDecimal, paymentId: ID!): PaymentCapture
+  paymentRefund(amount: PositiveDecimal, paymentId: ID!): PaymentRefund
   paymentVoid(paymentId: ID!): PaymentVoid
   pageCreate(input: PageInput!): PageCreate
   pageDelete(id: ID!): PageDelete
@@ -2689,7 +2697,7 @@ type Mutation {
   draftOrderUpdate(id: ID!, input: DraftOrderInput!): DraftOrderUpdate
   orderAddNote(order: ID!, input: OrderAddNoteInput!): OrderAddNote
   orderCancel(id: ID!): OrderCancel
-  orderCapture(amount: Decimal!, id: ID!): OrderCapture
+  orderCapture(amount: PositiveDecimal!, id: ID!): OrderCapture
   orderClearPrivateMeta(id: ID!, input: MetaPath!): OrderClearPrivateMeta @deprecated(reason: "Use the `deletePrivateMetadata` mutation instead. This field will be removed after 2020-07-31.")
   orderClearMeta(input: MetaPath!, token: UUID!): OrderClearMeta @deprecated(reason: "Use the `deleteMetadata` mutation instead. This field will be removed after 2020-07-31.")
   orderFulfill(input: OrderFulfillInput!, order: ID): OrderFulfill
@@ -2700,7 +2708,7 @@ type Mutation {
   orderFulfillmentUpdateMeta(id: ID!, input: MetaInput!): FulfillmentUpdateMeta @deprecated(reason: "Use the `updateMetadata` mutation instead. This field will be removed after 2020-07-31.")
   orderFulfillmentUpdatePrivateMeta(id: ID!, input: MetaInput!): FulfillmentUpdatePrivateMeta @deprecated(reason: "Use the `updatePrivateMetadata` mutation instead. This field will be removed after 2020-07-31.")
   orderMarkAsPaid(id: ID!): OrderMarkAsPaid
-  orderRefund(amount: Decimal!, id: ID!): OrderRefund
+  orderRefund(amount: PositiveDecimal!, id: ID!): OrderRefund
   orderUpdate(id: ID!, input: OrderUpdateInput!): OrderUpdate
   orderUpdateMeta(input: MetaInput!, token: UUID!): OrderUpdateMeta @deprecated(reason: "Use the `updateMetadata` mutation instead. This field will be removed after 2020-07-31.")
   orderUpdatePrivateMeta(id: ID!, input: MetaInput!): OrderUpdatePrivateMeta @deprecated(reason: "Use the `updatePrivateMetadata` mutation instead. This field will be removed after 2020-07-31.")
@@ -2988,6 +2996,7 @@ enum OrderErrorCode {
   GRAPHQL_ERROR
   INVALID
   PRODUCT_NOT_PUBLISHED
+  PRODUCT_UNAVAILABLE_FOR_PURCHASE
   NOT_FOUND
   ORDER_NO_SHIPPING_ADDRESS
   PAYMENT_ERROR
@@ -2995,6 +3004,7 @@ enum OrderErrorCode {
   REQUIRED
   SHIPPING_METHOD_NOT_APPLICABLE
   SHIPPING_METHOD_REQUIRED
+  TAX_ERROR
   UNIQUE
   VOID_INACTIVE_PAYMENT
   ZERO_QUANTITY
@@ -3045,6 +3055,8 @@ enum OrderEventsEmailsEnum {
   SHIPPING_CONFIRMATION
   TRACKING_UPDATED
   ORDER_CONFIRMATION
+  ORDER_CANCEL
+  ORDER_REFUND
   FULFILLMENT_CONFIRMATION
   DIGITAL_LINKS
 }
@@ -3105,8 +3117,8 @@ input OrderFulfillLineInput {
 }
 
 input OrderFulfillStockInput {
-  quantity: Int
-  warehouse: ID
+  quantity: Int!
+  warehouse: ID!
 }
 
 type OrderLine implements Node {
@@ -3121,6 +3133,7 @@ type OrderLine implements Node {
   digitalContentUrl: DigitalContentUrl
   thumbnail(size: Int): Image
   unitPrice: TaxedMoney
+  totalPrice: TaxedMoney
   variant: ProductVariant
   translatedProductName: String!
   translatedVariantName: String!
@@ -3439,7 +3452,7 @@ type PaymentGateway {
 input PaymentInput {
   gateway: String!
   token: String
-  amount: Decimal
+  amount: PositiveDecimal
   billingAddress: AddressInput
   returnUrl: String
 }
@@ -3608,6 +3621,8 @@ input PluginUpdateInput {
   configuration: [ConfigurationItemInput]
 }
 
+scalar PositiveDecimal
+
 input PriceRangeInput {
   gte: Float
   lte: Float
@@ -3628,6 +3643,9 @@ type Product implements Node & ObjectWithMetadata {
   updatedAt: DateTime
   chargeTaxes: Boolean!
   weight: Weight
+  availableForPurchase: Date
+  visibleInListings: Boolean!
+  defaultVariant: ProductVariant
   privateMetadata: [MetadataItem]!
   metadata: [MetadataItem]!
   privateMeta: [MetaStore]! @deprecated(reason: "Use the `privetaMetadata` field. This field will be removed after 2020-07-31.")
@@ -3646,13 +3664,7 @@ type Product implements Node & ObjectWithMetadata {
   images: [ProductImage]
   collections: [Collection]
   translation(languageCode: LanguageCodeEnum!): ProductTranslation
-}
-
-type ProductAttributeError {
-  field: String
-  message: String
-  code: ProductErrorCode!
-  attributes: [ID!]
+  isAvailableForPurchase: Boolean
 }
 
 type ProductBulkDelete {
@@ -3712,7 +3724,8 @@ input ProductCreateInput {
   weight: WeightScalar
   sku: String
   trackInventory: Boolean
-  basePrice: Decimal
+  basePrice: PositiveDecimal
+  visibleInListings: Boolean
   productType: ID!
   stocks: [StockInput!]
 }
@@ -3727,6 +3740,7 @@ type ProductError {
   field: String
   message: String
   code: ProductErrorCode!
+  attributes: [ID!]
 }
 
 enum ProductErrorCode {
@@ -3738,6 +3752,7 @@ enum ProductErrorCode {
   GRAPHQL_ERROR
   INVALID
   NOT_PRODUCTS_IMAGE
+  NOT_PRODUCTS_VARIANT
   NOT_FOUND
   REQUIRED
   UNIQUE
@@ -3750,6 +3765,8 @@ enum ProductFieldEnum {
   PRODUCT_TYPE
   CATEGORY
   VISIBLE
+  AVAILABLE_FOR_PURCHASE
+  SEARCHABLE
   PRODUCT_WEIGHT
   COLLECTIONS
   CHARGE_TAXES
@@ -3843,7 +3860,8 @@ input ProductInput {
   weight: WeightScalar
   sku: String
   trackInventory: Boolean
-  basePrice: Decimal
+  basePrice: PositiveDecimal
+  visibleInListings: Boolean
 }
 
 input ProductOrder {
@@ -3868,6 +3886,12 @@ type ProductPricingInfo {
   priceRange: TaxedMoneyRange
   priceRangeUndiscounted: TaxedMoneyRange
   priceRangeLocalCurrency: TaxedMoneyRange
+}
+
+type ProductSetAvailabilityForPurchase {
+  errors: [Error!]! @deprecated(reason: "Use typed errors with error codes. This field will be removed after 2020-07-31.")
+  product: Product
+  productErrors: [ProductError!]!
 }
 
 input ProductStockFilterInput {
@@ -4083,8 +4107,8 @@ type ProductVariantBulkCreate {
 
 input ProductVariantBulkCreateInput {
   attributes: [AttributeValueInput]!
-  costPrice: Decimal
-  price: Decimal
+  costPrice: PositiveDecimal
+  price: PositiveDecimal
   sku: String!
   trackInventory: Boolean
   weight: WeightScalar
@@ -4128,8 +4152,8 @@ type ProductVariantCreate {
 
 input ProductVariantCreateInput {
   attributes: [AttributeValueInput]!
-  costPrice: Decimal
-  price: Decimal
+  costPrice: PositiveDecimal
+  price: PositiveDecimal
   sku: String
   trackInventory: Boolean
   weight: WeightScalar
@@ -4143,13 +4167,30 @@ type ProductVariantDelete {
   productVariant: ProductVariant
 }
 
+input ProductVariantFilterInput {
+  search: String
+  sku: [String]
+}
+
 input ProductVariantInput {
   attributes: [AttributeValueInput]
-  costPrice: Decimal
-  price: Decimal
+  costPrice: PositiveDecimal
+  price: PositiveDecimal
   sku: String
   trackInventory: Boolean
   weight: WeightScalar
+}
+
+type ProductVariantReorder {
+  errors: [Error!]! @deprecated(reason: "Use typed errors with error codes. This field will be removed after 2020-07-31.")
+  product: Product
+  productErrors: [ProductError!]!
+}
+
+type ProductVariantSetDefault {
+  errors: [Error!]! @deprecated(reason: "Use typed errors with error codes. This field will be removed after 2020-07-31.")
+  product: Product
+  productErrors: [ProductError!]!
 }
 
 type ProductVariantStocksCreate {
@@ -4233,8 +4274,8 @@ type Query {
   products(filter: ProductFilterInput, sortBy: ProductOrder, stockAvailability: StockAvailability, before: String, after: String, first: Int, last: Int): ProductCountableConnection
   productType(id: ID!): ProductType
   productTypes(filter: ProductTypeFilterInput, sortBy: ProductTypeSortingInput, before: String, after: String, first: Int, last: Int): ProductTypeCountableConnection
-  productVariant(id: ID!): ProductVariant
-  productVariants(ids: [ID], before: String, after: String, first: Int, last: Int): ProductVariantCountableConnection
+  productVariant(id: ID, sku: String): ProductVariant
+  productVariants(ids: [ID], filter: ProductVariantFilterInput, before: String, after: String, first: Int, last: Int): ProductVariantCountableConnection
   reportProductSales(period: ReportingPeriod!, before: String, after: String, first: Int, last: Int): ProductVariantCountableConnection
   payment(id: ID!): Payment
   payments(before: String, after: String, first: Int, last: Int): PaymentCountableConnection
@@ -4373,7 +4414,7 @@ input SaleFilterInput {
 input SaleInput {
   name: String
   type: DiscountValueTypeEnum
-  value: Decimal
+  value: PositiveDecimal
   products: [ID]
   categories: [ID]
   collections: [ID]
@@ -4619,9 +4660,9 @@ type ShippingPriceDelete {
 
 input ShippingPriceInput {
   name: String
-  price: Decimal
-  minimumOrderPrice: Decimal
-  maximumOrderPrice: Decimal
+  price: PositiveDecimal
+  minimumOrderPrice: PositiveDecimal
+  maximumOrderPrice: PositiveDecimal
   minimumOrderWeight: WeightScalar
   maximumOrderWeight: WeightScalar
   type: ShippingMethodTypeEnum
@@ -5331,11 +5372,11 @@ input VoucherInput {
   startDate: DateTime
   endDate: DateTime
   discountValueType: DiscountValueTypeEnum
-  discountValue: Decimal
+  discountValue: PositiveDecimal
   products: [ID]
   collections: [ID]
   categories: [ID]
-  minAmountSpent: Decimal
+  minAmountSpent: PositiveDecimal
   minCheckoutItemsQuantity: Int
   countries: [String]
   applyOncePerOrder: Boolean
@@ -5578,6 +5619,7 @@ enum WebhookEventTypeEnum {
   INVOICE_SENT
   CUSTOMER_CREATED
   PRODUCT_CREATED
+  PRODUCT_UPDATED
   CHECKOUT_QUANTITY_CHANGED
   CHECKOUT_CREATED
   CHECKOUT_UPDATED
@@ -5600,6 +5642,7 @@ enum WebhookSampleEventTypeEnum {
   INVOICE_SENT
   CUSTOMER_CREATED
   PRODUCT_CREATED
+  PRODUCT_UPDATED
   CHECKOUT_QUANTITY_CHANGED
   CHECKOUT_CREATED
   CHECKOUT_UPDATED

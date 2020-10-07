@@ -3,11 +3,11 @@ from django.conf import settings
 from django.core.exceptions import ValidationError
 
 from ...checkout.calculations import calculate_checkout_total_with_gift_cards
+from ...checkout.checkout_cleaner import clean_billing_address, clean_checkout_shipping
 from ...checkout.utils import cancel_active_payments
 from ...core.permissions import OrderPermissions
 from ...core.utils import get_client_ip
 from ...core.utils.url import validate_storefront_url
-from ...graphql.checkout.utils import clean_billing_address, clean_checkout_shipping
 from ...payment import PaymentError, gateway, models
 from ...payment.error_codes import PaymentErrorCode
 from ...payment.utils import create_payment, is_currency_supported
@@ -15,7 +15,7 @@ from ..account.i18n import I18nMixin
 from ..account.types import AddressInput
 from ..checkout.types import Checkout
 from ..core.mutations import BaseMutation
-from ..core.scalars import Decimal
+from ..core.scalars import PositiveDecimal
 from ..core.types import common as common_types
 from ..core.utils import from_global_id_strict_type
 from .types import Payment
@@ -34,7 +34,7 @@ class PaymentInput(graphene.InputObjectType):
             "billing data in a secure manner."
         ),
     )
-    amount = Decimal(
+    amount = PositiveDecimal(
         required=False,
         description=(
             "Total amount of the transaction, including "
@@ -190,7 +190,7 @@ class PaymentCapture(BaseMutation):
 
     class Arguments:
         payment_id = graphene.ID(required=True, description="Payment ID.")
-        amount = Decimal(description="Transaction amount.")
+        amount = PositiveDecimal(description="Transaction amount.")
 
     class Meta:
         description = "Captures the authorized payment amount."

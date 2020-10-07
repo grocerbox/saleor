@@ -1,18 +1,21 @@
-from unittest.mock import ANY
+from unittest.mock import ANY, patch
 from uuid import uuid4
 
 import graphene
 import pytest
 from measurement.measures import Weight
+from prices import Money, TaxedMoney
 
 from ....core.weight import WeightUnits
+from ....order import OrderStatus
+from ....order.models import OrderLine
 from ....product.error_codes import ProductErrorCode
-from ....product.models import ProductVariant
+from ....product.models import Product, ProductVariant
 from ....product.utils.attributes import associate_attribute_values_to_instance
 from ....warehouse.error_codes import StockErrorCode
 from ....warehouse.models import Stock, Warehouse
 from ...core.enums import WeightUnitsEnum
-from ...tests.utils import get_graphql_content
+from ...tests.utils import assert_negative_positive_decimal_value, get_graphql_content
 
 
 def test_fetch_variant(
@@ -88,19 +91,16 @@ def test_fetch_variant(
     assert data["weight"]["unit"] == WeightUnitsEnum.G.name
 
 
-def test_create_variant(
-    staff_api_client, product, product_type, permission_manage_products, warehouse
-):
-    query = """
-        mutation createVariant (
+CREATE_VARIANT_MUTATION = """
+      mutation createVariant (
             $productId: ID!,
-            $sku: String!,
+            $sku: String,
             $stocks: [StockInput!],
-            $price: Decimal,
-            $costPrice: Decimal,
+            $price: PositiveDecimal,
+            $costPrice: PositiveDecimal,
             $attributes: [AttributeValueInput]!,
             $weight: WeightScalar,
-            $trackInventory: Boolean!) {
+            $trackInventory: Boolean) {
                 productVariantCreate(
                     input: {
                         product: $productId,
@@ -115,6 +115,8 @@ def test_create_variant(
                     productErrors {
                       field
                       message
+                      attributes
+                      code
                     }
                     productVariant {
                         name
@@ -151,7 +153,19 @@ def test_create_variant(
                 }
             }
 
-    """
+"""
+
+
+@patch("saleor.plugins.manager.PluginsManager.product_updated")
+def test_create_variant(
+    updated_webhook_mock,
+    staff_api_client,
+    product,
+    product_type,
+    permission_manage_products,
+    warehouse,
+):
+    query = CREATE_VARIANT_MUTATION
     product_id = graphene.Node.to_global_id("Product", product.pk)
     sku = "1"
     price = 1.32
@@ -196,25 +210,13 @@ def test_create_variant(
     assert len(data["stocks"]) == 1
     assert data["stocks"][0]["quantity"] == stocks[0]["quantity"]
     assert data["stocks"][0]["warehouse"]["slug"] == warehouse.slug
+    updated_webhook_mock.assert_called_once_with(product)
 
 
 def test_create_product_variant_without_price(
     staff_api_client, product, product_type, permission_manage_products
 ):
-    query = """
-        mutation createVariant ($productId: ID!, $attributes: [AttributeValueInput]!) {
-            productVariantCreate(
-                input: {
-                    product: $productId,
-                    attributes: $attributes
-                }) {
-                productErrors {
-                    field
-                    code
-                }
-            }
-        }
-    """
+    query = CREATE_VARIANT_MUTATION
     product_id = graphene.Node.to_global_id("Product", product.pk)
     attr_id = graphene.Node.to_global_id(
         "Attribute", product_type.variant_attributes.first().pk
@@ -237,25 +239,7 @@ def test_create_product_variant_without_price(
 def test_create_product_variant_with_negative_weight(
     staff_api_client, product, product_type, permission_manage_products
 ):
-    query = """
-        mutation createVariant (
-            $productId: ID!,
-            $attributes: [AttributeValueInput]!,
-            $weight: WeightScalar) {
-                productVariantCreate(
-                    input: {
-                        product: $productId,
-                        attributes: $attributes,
-                        weight: $weight
-                    }) {
-                    productErrors {
-                        field
-                        code
-                        message
-                    }
-                }
-            }
-    """
+    query = CREATE_VARIANT_MUTATION
     product_id = graphene.Node.to_global_id("Product", product.pk)
 
     variant_id = graphene.Node.to_global_id(
@@ -281,28 +265,7 @@ def test_create_product_variant_with_negative_weight(
 def test_create_product_variant_not_all_attributes(
     staff_api_client, product, product_type, color_attribute, permission_manage_products
 ):
-    query = """
-            mutation createVariant (
-                $productId: ID!,
-                $price: Decimal,
-                $sku: String!,
-                $attributes: [AttributeValueInput]!) {
-                    productVariantCreate(
-                        input: {
-                            product: $productId,
-                            price: $price,
-                            sku: $sku,
-                            attributes: $attributes
-                        }) {
-                        productErrors {
-                            field
-                            code
-                            message
-                        }
-                    }
-                }
-
-        """
+    query = CREATE_VARIANT_MUTATION
     product_id = graphene.Node.to_global_id("Product", product.pk)
     sku = "1"
     variant_id = graphene.Node.to_global_id(
@@ -326,8 +289,36 @@ def test_create_product_variant_not_all_attributes(
         "field": "attributes",
         "code": ProductErrorCode.REQUIRED.name,
         "message": ANY,
+        "attributes": None,
     }
     assert not product.variants.filter(sku=sku).exists()
+
+
+def test_create_product_variant_too_many_places_in_cost_price(
+    staff_api_client, product, product_type, permission_manage_products
+):
+    query = CREATE_VARIANT_MUTATION
+    product_id = graphene.Node.to_global_id("Product", product.pk)
+
+    variant_id = graphene.Node.to_global_id(
+        "Attribute", product_type.variant_attributes.first().pk
+    )
+    variant_value = "test-value"
+
+    variables = {
+        "productId": product_id,
+        "weight": 1,
+        "attributes": [{"id": variant_id, "values": [variant_value]}],
+        "costPrice": 1.40001,
+    }
+    response = staff_api_client.post_graphql(
+        query, variables, permissions=[permission_manage_products]
+    )
+    content = get_graphql_content(response)
+    data = content["data"]["productVariantCreate"]
+    error = data["productErrors"][0]
+    assert error["field"] == "costPrice"
+    assert error["code"] == ProductErrorCode.INVALID.name
 
 
 def test_create_product_variant_duplicated_attributes(
@@ -337,28 +328,7 @@ def test_create_product_variant_duplicated_attributes(
     size_attribute,
     permission_manage_products,
 ):
-    query = """
-        mutation createVariant (
-            $productId: ID!,
-            $price: Decimal,
-            $sku: String!,
-            $attributes: [AttributeValueInput]!
-        ) {
-            productVariantCreate(
-                input: {
-                    product: $productId,
-                    price: $price,
-                    sku: $sku,
-                    attributes: $attributes
-                }) {
-                productErrors {
-                    field
-                    code
-                    message
-                }
-            }
-        }
-    """
+    query = CREATE_VARIANT_MUTATION
     product = product_with_variant_with_two_attributes
     product_id = graphene.Node.to_global_id("Product", product.pk)
     color_attribute_id = graphene.Node.to_global_id("Attribute", color_attribute.id)
@@ -382,8 +352,89 @@ def test_create_product_variant_duplicated_attributes(
         "field": "attributes",
         "code": ProductErrorCode.DUPLICATED_INPUT_ITEM.name,
         "message": ANY,
+        "attributes": None,
     }
     assert not product.variants.filter(sku=sku).exists()
+
+
+def test_create_variant_invalid_variant_attributes(
+    staff_api_client,
+    product,
+    product_type,
+    permission_manage_products,
+    warehouse,
+    color_attribute,
+    weight_attribute,
+):
+    query = CREATE_VARIANT_MUTATION
+    product_id = graphene.Node.to_global_id("Product", product.pk)
+    sku = "1"
+    price = 1.32
+    cost_price = 3.22
+    weight = 10.22
+
+    # Default attribute defined in product_type fixture
+    size_attribute = product_type.variant_attributes.get(name="Size")
+    size_value_slug = size_attribute.values.first().slug
+    size_attr_id = graphene.Node.to_global_id("Attribute", size_attribute.id)
+
+    # Add second attribute
+    product_type.variant_attributes.add(color_attribute)
+    color_attr_id = graphene.Node.to_global_id("Attribute", color_attribute.id)
+    non_existent_attr_value = "The cake is a lie"
+
+    # Add third attribute
+    product_type.variant_attributes.add(weight_attribute)
+    weight_attr_id = graphene.Node.to_global_id("Attribute", weight_attribute.id)
+
+    stocks = [
+        {
+            "warehouse": graphene.Node.to_global_id("Warehouse", warehouse.pk),
+            "quantity": 20,
+        }
+    ]
+
+    variables = {
+        "productId": product_id,
+        "sku": sku,
+        "stocks": stocks,
+        "costPrice": cost_price,
+        "price": price,
+        "weight": weight,
+        "attributes": [
+            {"id": color_attr_id, "values": [" "]},
+            {"id": weight_attr_id, "values": [None]},
+            {"id": size_attr_id, "values": [non_existent_attr_value, size_value_slug]},
+        ],
+        "trackInventory": True,
+    }
+    response = staff_api_client.post_graphql(
+        query, variables, permissions=[permission_manage_products]
+    )
+    content = get_graphql_content(response)
+
+    data = content["data"]["productVariantCreate"]
+    errors = data["productErrors"]
+
+    assert not data["productVariant"]
+    assert len(errors) == 2
+
+    expected_errors = [
+        {
+            "attributes": [color_attr_id, weight_attr_id],
+            "code": ProductErrorCode.REQUIRED.name,
+            "field": "attributes",
+            "message": ANY,
+        },
+        {
+            "attributes": [size_attr_id],
+            "code": ProductErrorCode.INVALID.name,
+            "field": "attributes",
+            "message": ANY,
+        },
+    ]
+    for error in expected_errors:
+        assert error in errors
 
 
 def test_create_product_variant_update_with_new_attributes(
@@ -393,8 +444,8 @@ def test_create_product_variant_update_with_new_attributes(
         mutation VariantUpdate(
           $id: ID!
           $attributes: [AttributeValueInput]
-          $costPrice: Decimal
-          $price: Decimal
+          $costPrice: PositiveDecimal
+          $price: PositiveDecimal
           $sku: String
           $trackInventory: Boolean!
         ) {
@@ -461,13 +512,16 @@ def test_create_product_variant_update_with_new_attributes(
     assert attributes[0]["attribute"]["id"] == size_attribute_id
 
 
-def test_update_product_variant(staff_api_client, product, permission_manage_products):
+@patch("saleor.plugins.manager.PluginsManager.product_updated")
+def test_update_product_variant(
+    updated_webhook_mock, staff_api_client, product, permission_manage_products
+):
     query = """
         mutation updateVariant (
             $id: ID!,
             $sku: String!,
-            $price: Decimal,
-            $costPrice: Decimal,
+            $price: PositiveDecimal,
+            $costPrice: PositiveDecimal,
             $trackInventory: Boolean!) {
                 productVariantUpdate(
                     id: $id,
@@ -517,6 +571,7 @@ def test_update_product_variant(staff_api_client, product, permission_manage_pro
     assert data["costPrice"]["amount"] == cost_price
     assert data["price"]["amount"] == price
     assert data["sku"] == sku
+    updated_webhook_mock.assert_called_once_with(product)
 
 
 def test_update_product_variant_with_negative_weight(
@@ -525,7 +580,7 @@ def test_update_product_variant_with_negative_weight(
     query = """
         mutation updateVariant (
             $id: ID!,
-            $price: Decimal,
+            $price: PositiveDecimal,
             $weight: WeightScalar
         ) {
             productVariantUpdate(
@@ -570,8 +625,8 @@ def test_update_product_variant_unset_cost_price(
         mutation updateVariant (
             $id: ID!,
             $sku: String!,
-            $price: Decimal,
-            $costPrice: Decimal) {
+            $price: PositiveDecimal,
+            $costPrice: PositiveDecimal) {
                 productVariantUpdate(
                     id: $id,
                     input: {
@@ -615,7 +670,7 @@ QUERY_UPDATE_VARIANT_ATTRIBUTES = """
     mutation updateVariant (
         $id: ID!,
         $sku: String,
-        $price: Decimal,
+        $price: PositiveDecimal,
         $attributes: [AttributeValueInput]!) {
             productVariantUpdate(
                 id: $id,
@@ -635,6 +690,47 @@ QUERY_UPDATE_VARIANT_ATTRIBUTES = """
             }
         }
 """
+
+
+def test_update_product_variant_with_too_many_decimal_values_in_price(
+    staff_api_client, product, permission_manage_products
+):
+    query = """
+        mutation updateVariant (
+            $id: ID!,
+            $price: PositiveDecimal,
+            $weight: WeightScalar
+        ) {
+            productVariantUpdate(
+                id: $id,
+                input: {
+                    weight: $weight,
+                    price: $price
+                }
+            ){
+                productVariant {
+                    name
+                }
+                productErrors {
+                    field
+                    message
+                    code
+                }
+            }
+        }
+    """
+    variant = product.variants.first()
+    variant_id = graphene.Node.to_global_id("ProductVariant", variant.pk)
+    variables = {"id": variant_id, "weight": 1, "price": 15.234}
+    response = staff_api_client.post_graphql(
+        query, variables, permissions=[permission_manage_products]
+    )
+    variant.refresh_from_db()
+    content = get_graphql_content(response)
+    data = content["data"]["productVariantUpdate"]
+    error = data["productErrors"][0]
+    assert error["field"] == "price"
+    assert error["code"] == ProductErrorCode.INVALID.name
 
 
 def test_update_product_variant_not_all_attributes(
@@ -816,9 +912,10 @@ def test_update_product_variant_with_duplicated_attribute(
 @pytest.mark.parametrize(
     "values, message",
     (
-        ([], "size expects a value but none were given"),
+        ([], "Attribute expects a value but none were given"),
         (["one", "two"], "A variant attribute cannot take more than one value"),
         (["   "], "Attribute values cannot be blank"),
+        ([None], "Attribute values cannot be blank"),
     ),
 )
 def test_update_product_variant_requires_values(
@@ -828,6 +925,7 @@ def test_update_product_variant_requires_values(
 
     - No values
     - Blank value
+    - None as value
     - More than one value
     """
 
@@ -898,17 +996,20 @@ def test_update_product_variant_with_price_does_not_raise_price_validation_error
     )
 
 
-def test_delete_variant(staff_api_client, product, permission_manage_products):
-    query = """
-        mutation variantDelete($id: ID!) {
-            productVariantDelete(id: $id) {
-                productVariant {
-                    sku
-                    id
-                }
-              }
+DELETE_VARIANT_MUTATION = """
+    mutation variantDelete($id: ID!) {
+        productVariantDelete(id: $id) {
+            productVariant {
+                sku
+                id
             }
-    """
+            }
+        }
+"""
+
+
+def test_delete_variant(staff_api_client, product, permission_manage_products):
+    query = DELETE_VARIANT_MUTATION
     variant = product.variants.first()
     variant_id = graphene.Node.to_global_id("ProductVariant", variant.pk)
     variables = {"id": variant_id}
@@ -920,6 +1021,147 @@ def test_delete_variant(staff_api_client, product, permission_manage_products):
     assert data["productVariant"]["sku"] == variant.sku
     with pytest.raises(variant._meta.model.DoesNotExist):
         variant.refresh_from_db()
+
+
+def test_delete_variant_in_draft_order(
+    staff_api_client, order_line, permission_manage_products, order_list
+):
+    query = DELETE_VARIANT_MUTATION
+
+    draft_order = order_line.order
+    draft_order.status = OrderStatus.DRAFT
+    draft_order.save(update_fields=["status"])
+
+    variant = order_line.variant
+    variant_id = graphene.Node.to_global_id("ProductVariant", variant.pk)
+    variables = {"id": variant_id}
+
+    net = variant.get_price()
+    gross = Money(amount=net.amount, currency=net.currency)
+    order_not_draft = order_list[-1]
+    order_line_not_in_draft = OrderLine.objects.create(
+        variant=variant,
+        order=order_not_draft,
+        product_name=str(variant.product),
+        variant_name=str(variant),
+        product_sku=variant.sku,
+        is_shipping_required=variant.is_shipping_required(),
+        unit_price=TaxedMoney(net=net, gross=gross),
+        quantity=3,
+    )
+    order_line_not_in_draft_pk = order_line_not_in_draft.pk
+
+    response = staff_api_client.post_graphql(
+        query, variables, permissions=[permission_manage_products]
+    )
+
+    content = get_graphql_content(response)
+    data = content["data"]["productVariantDelete"]
+    assert data["productVariant"]["sku"] == variant.sku
+    with pytest.raises(order_line._meta.model.DoesNotExist):
+        order_line.refresh_from_db()
+
+    assert OrderLine.objects.filter(pk=order_line_not_in_draft_pk).exists()
+
+
+def test_delete_default_variant(
+    staff_api_client, product_with_two_variants, permission_manage_products
+):
+    # given
+    query = DELETE_VARIANT_MUTATION
+    product = product_with_two_variants
+
+    default_variant = product.variants.first()
+    second_variant = product.variants.last()
+
+    product.default_variant = default_variant
+    product.save(update_fields=["default_variant"])
+
+    assert second_variant.pk != default_variant.pk
+
+    variant_id = graphene.Node.to_global_id("ProductVariant", default_variant.pk)
+    variables = {"id": variant_id}
+
+    # when
+    response = staff_api_client.post_graphql(
+        query, variables, permissions=[permission_manage_products]
+    )
+
+    # then
+    content = get_graphql_content(response)
+    data = content["data"]["productVariantDelete"]
+    assert data["productVariant"]["sku"] == default_variant.sku
+    with pytest.raises(default_variant._meta.model.DoesNotExist):
+        default_variant.refresh_from_db()
+
+    product.refresh_from_db()
+    assert product.default_variant.pk == second_variant.pk
+
+
+def test_delete_not_default_variant_left_default_variant_unchanged(
+    staff_api_client, product_with_two_variants, permission_manage_products
+):
+    # given
+    query = DELETE_VARIANT_MUTATION
+    product = product_with_two_variants
+
+    default_variant = product.variants.first()
+    second_variant = product.variants.last()
+
+    product.default_variant = default_variant
+    product.save(update_fields=["default_variant"])
+
+    assert second_variant.pk != default_variant.pk
+
+    variant_id = graphene.Node.to_global_id("ProductVariant", second_variant.pk)
+    variables = {"id": variant_id}
+
+    # when
+    response = staff_api_client.post_graphql(
+        query, variables, permissions=[permission_manage_products]
+    )
+
+    # then
+    content = get_graphql_content(response)
+    data = content["data"]["productVariantDelete"]
+    assert data["productVariant"]["sku"] == second_variant.sku
+    with pytest.raises(second_variant._meta.model.DoesNotExist):
+        second_variant.refresh_from_db()
+
+    product.refresh_from_db()
+    assert product.default_variant.pk == default_variant.pk
+
+
+def test_delete_default_all_product_variant_left_product_default_variant_unset(
+    staff_api_client, product, permission_manage_products
+):
+    # given
+    query = DELETE_VARIANT_MUTATION
+
+    default_variant = product.variants.first()
+
+    product.default_variant = default_variant
+    product.save(update_fields=["default_variant"])
+
+    assert product.variants.count() == 1
+
+    variant_id = graphene.Node.to_global_id("ProductVariant", default_variant.pk)
+    variables = {"id": variant_id}
+
+    # when
+    response = staff_api_client.post_graphql(
+        query, variables, permissions=[permission_manage_products]
+    )
+
+    # then
+    content = get_graphql_content(response)
+    data = content["data"]["productVariantDelete"]
+    assert data["productVariant"]["sku"] == default_variant.sku
+    with pytest.raises(default_variant._meta.model.DoesNotExist):
+        default_variant.refresh_from_db()
+
+    product.refresh_from_db()
+    assert not product.default_variant
 
 
 def _fetch_all_variants(client, permissions=None):
@@ -964,6 +1206,105 @@ def test_fetch_all_variants_anonymous_user(
 ):
     data = _fetch_all_variants(api_client)
     assert data["totalCount"] == 0
+
+
+def test_product_variants_by_ids(user_api_client, variant):
+    query = """
+        query getProduct($ids: [ID!]) {
+            productVariants(ids: $ids, first: 1) {
+                edges {
+                    node {
+                        id
+                    }
+                }
+            }
+        }
+    """
+    variant_id = graphene.Node.to_global_id("ProductVariant", variant.id)
+
+    variables = {"ids": [variant_id]}
+    response = user_api_client.post_graphql(query, variables)
+    content = get_graphql_content(response)
+    data = content["data"]["productVariants"]
+    assert data["edges"][0]["node"]["id"] == variant_id
+    assert len(data["edges"]) == 1
+
+
+def test_product_variants_visible_in_listings_by_customer(
+    user_api_client, product_list
+):
+    # given
+    product_list[0].visible_in_listings = False
+    product_list[0].save(update_fields=["visible_in_listings"])
+
+    product_count = Product.objects.count()
+
+    # when
+    data = _fetch_all_variants(user_api_client)
+
+    assert data["totalCount"] == product_count - 1
+
+
+def test_product_variants_visible_in_listings_by_staff_without_perm(
+    staff_api_client, product_list
+):
+    # given
+    product_list[0].visible_in_listings = False
+    product_list[0].save(update_fields=["visible_in_listings"])
+
+    product_count = Product.objects.count()
+
+    # when
+    data = _fetch_all_variants(staff_api_client)
+
+    assert data["totalCount"] == product_count - 1
+
+
+def test_product_variants_visible_in_listings_by_staff_with_perm(
+    staff_api_client, product_list, permission_manage_products
+):
+    # given
+    product_list[0].visible_in_listings = False
+    product_list[0].save(update_fields=["visible_in_listings"])
+
+    product_count = Product.objects.count()
+
+    # when
+    data = _fetch_all_variants(
+        staff_api_client, permissions=[permission_manage_products]
+    )
+
+    assert data["totalCount"] == product_count
+
+
+def test_product_variants_visible_in_listings_by_app_without_perm(
+    app_api_client, product_list
+):
+    # given
+    product_list[0].visible_in_listings = False
+    product_list[0].save(update_fields=["visible_in_listings"])
+
+    product_count = Product.objects.count()
+
+    # when
+    data = _fetch_all_variants(app_api_client)
+
+    assert data["totalCount"] == product_count - 1
+
+
+def test_product_variants_visible_in_listings_by_app_with_perm(
+    app_api_client, product_list, permission_manage_products
+):
+    # given
+    product_list[0].visible_in_listings = False
+    product_list[0].save(update_fields=["visible_in_listings"])
+
+    product_count = Product.objects.count()
+
+    # when
+    data = _fetch_all_variants(app_api_client, permissions=[permission_manage_products])
+
+    assert data["totalCount"] == product_count
 
 
 def _fetch_variant(client, variant, permissions=None):
@@ -1087,9 +1428,10 @@ def test_product_variant_bulk_create_by_attribute_id(
 @pytest.mark.parametrize(
     "price_field", ("price", "costPrice",),
 )
-def test_product_variant_bulk_create_by_attribute_id_with_invalid_price(
+def test_product_variant_bulk_create_by_attribute_id_with_negative_price(
     staff_api_client, product, size_attribute, permission_manage_products, price_field
 ):
+    # given
     product_id = graphene.Node.to_global_id("Product", product.pk)
     attribut_id = graphene.Node.to_global_id("Attribute", size_attribute.pk)
     attribute_value = size_attribute.values.last()
@@ -1105,13 +1447,50 @@ def test_product_variant_bulk_create_by_attribute_id_with_invalid_price(
 
     variables = {"productId": product_id, "variants": [variant]}
     staff_api_client.user.user_permissions.add(permission_manage_products)
+
+    # when
     response = staff_api_client.post_graphql(
         PRODUCT_VARIANT_BULK_CREATE_MUTATION, variables
     )
+
+    # then
+    assert_negative_positive_decimal_value(response)
+
+
+@pytest.mark.parametrize(
+    "price_field", ("price", "costPrice",),
+)
+def test_product_variant_bulk_create_too_many_decimal_places_in_price(
+    staff_api_client, product, size_attribute, permission_manage_products, price_field
+):
+    # given
+    product_id = graphene.Node.to_global_id("Product", product.pk)
+    attribut_id = graphene.Node.to_global_id("Attribute", size_attribute.pk)
+    attribute_value = size_attribute.values.last()
+    sku = str(uuid4())[:12]
+    variant = {
+        "sku": sku,
+        "weight": 2.5,
+        "trackInventory": True,
+        "attributes": [{"id": attribut_id, "values": [attribute_value.name]}],
+        "price": 10,
+        price_field: 1.1234,
+    }
+
+    variables = {"productId": product_id, "variants": [variant]}
+    staff_api_client.user.user_permissions.add(permission_manage_products)
+
+    # when
+    response = staff_api_client.post_graphql(
+        PRODUCT_VARIANT_BULK_CREATE_MUTATION, variables
+    )
+
+    # then
     content = get_graphql_content(response)
     data = content["data"]["productVariantBulkCreate"]
-    assert data["bulkProductErrors"][0]["field"] == price_field
-    assert data["bulkProductErrors"][0]["code"] == ProductErrorCode.INVALID.name
+    error = data["bulkProductErrors"][0]
+    assert error["field"] == price_field
+    assert error["code"] == ProductErrorCode.INVALID.name
 
 
 def test_product_variant_bulk_create_empty_attribute(
