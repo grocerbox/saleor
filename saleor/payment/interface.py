@@ -31,7 +31,7 @@ class GatewayResponse:
     kind: str  # use "TransactionKind" class
     amount: Decimal
     currency: str
-    transaction_id: Optional[str]
+    transaction_id: str
     error: Optional[str]
     customer_id: Optional[str] = None
     payment_method_info: Optional[PaymentMethodInfo] = None
@@ -123,3 +123,10 @@ class PaymentGateway:
     name: str
     currencies: List[str]
     config: List[Dict[str, Any]]
+
+
+@dataclass
+class InitializedPaymentResponse:
+    gateway: str
+    name: str
+    data: Optional[JSONType] = None

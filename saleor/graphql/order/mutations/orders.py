@@ -11,6 +11,7 @@ from ....order.actions import (
     clean_mark_order_as_paid,
     mark_order_as_paid,
     order_captured,
+    order_confirmed,
     order_refunded,
     order_shipping_updated,
     order_voided,
@@ -18,13 +19,12 @@ from ....order.actions import (
 from ....order.error_codes import OrderErrorCode
 from ....order.utils import get_valid_shipping_methods_for_order, update_order_prices
 from ....payment import CustomPaymentChoices, PaymentError, TransactionKind, gateway
+from ....shipping import models as shipping_models
 from ...account.types import AddressInput
-from ...core.mutations import BaseMutation
-from ...core.scalars import UUID, PositiveDecimal
+from ...core.mutations import BaseMutation, ModelMutation
+from ...core.scalars import PositiveDecimal
 from ...core.types.common import OrderError
 from ...core.utils import validate_required_string_field
-from ...meta.deprecated.mutations import ClearMetaBaseMutation, UpdateMetaBaseMutation
-from ...meta.deprecated.types import MetaInput, MetaPath
 from ...order.mutations.draft_orders import DraftOrderCreate
 from ...order.types import Order, OrderEvent
 from ...shipping.types import ShippingMethod
@@ -233,7 +233,7 @@ class OrderUpdateShipping(BaseMutation):
                 )
 
             order.shipping_method = None
-            order.shipping_price = zero_taxed_money()
+            order.shipping_price = zero_taxed_money(order.currency)
             order.shipping_method_name = None
             order.save(
                 update_fields=[
@@ -251,12 +251,19 @@ class OrderUpdateShipping(BaseMutation):
             data["shipping_method"],
             field="shipping_method",
             only_type=ShippingMethod,
+            qs=shipping_models.ShippingMethod.objects.prefetch_related(
+                "zip_code_rules"
+            ),
         )
 
         clean_order_update_shipping(order, method)
 
         order.shipping_method = method
-        order.shipping_price = info.context.plugins.calculate_order_shipping(order)
+        shipping_price = info.context.plugins.calculate_order_shipping(order)
+        order.shipping_price = shipping_price
+        order.shipping_tax_rate = info.context.plugins.get_order_shipping_tax_rate(
+            order, shipping_price
+        )
         order.shipping_method_name = method.name
         order.save(
             update_fields=[
@@ -265,6 +272,7 @@ class OrderUpdateShipping(BaseMutation):
                 "shipping_method_name",
                 "shipping_price_net_amount",
                 "shipping_price_gross_amount",
+                "shipping_tax_rate",
             ]
         )
         update_order_prices(order, info.context.discounts)
@@ -307,7 +315,8 @@ class OrderAddNote(BaseMutation):
             raise ValidationError(
                 {
                     "message": ValidationError(
-                        "Message can't be empty.", code=OrderErrorCode.REQUIRED,
+                        "Message can't be empty.",
+                        code=OrderErrorCode.REQUIRED,
                     )
                 }
             )
@@ -318,7 +327,9 @@ class OrderAddNote(BaseMutation):
         order = cls.get_node_or_error(info, data.get("id"), only_type=Order)
         cleaned_input = cls.clean_input(info, order, data)
         event = events.order_note_added_event(
-            order=order, user=info.context.user, message=cleaned_input["message"],
+            order=order,
+            user=info.context.user,
+            message=cleaned_input["message"],
         )
         return OrderAddNote(order=order, event=event)
 
@@ -348,6 +359,9 @@ class OrderMarkAsPaid(BaseMutation):
 
     class Arguments:
         id = graphene.ID(required=True, description="ID of the order to mark paid.")
+        transaction_reference = graphene.String(
+            required=False, description="The external transaction reference."
+        )
 
     class Meta:
         description = "Mark order as manually paid."
@@ -366,13 +380,13 @@ class OrderMarkAsPaid(BaseMutation):
     @classmethod
     def perform_mutation(cls, _root, info, **data):
         order = cls.get_node_or_error(info, data.get("id"), only_type=Order)
-
+        transaction_reference = data.get("transaction_reference")
         cls.clean_billing_address(order)
         try_payment_action(
             order, info.context.user, None, clean_mark_order_as_paid, order
         )
 
-        mark_order_as_paid(order, info.context.user)
+        mark_order_as_paid(order, info.context.user, transaction_reference)
         return OrderMarkAsPaid(order=order)
 
 
@@ -487,56 +501,43 @@ class OrderRefund(BaseMutation):
         return OrderRefund(order=order)
 
 
-class OrderUpdateMeta(UpdateMetaBaseMutation):
-    class Meta:
-        description = "Updates meta for order."
-        model = models.Order
-        public = True
+class OrderConfirm(ModelMutation):
+    order = graphene.Field(Order, description="Order which has been confirmed.")
 
     class Arguments:
-        token = UUID(description="Token of an object to update.", required=True)
-        input = MetaInput(
-            description="Fields required to update new or stored metadata item.",
-            required=True,
-        )
+        id = graphene.ID(description="ID of an order to confirm.", required=True)
+
+    class Meta:
+        description = "Confirms an unconfirmed order by changing status to unfulfilled."
+        model = models.Order
+        permissions = (OrderPermissions.MANAGE_ORDERS,)
+        error_type_class = OrderError
+        error_type_field = "order_errors"
 
     @classmethod
     def get_instance(cls, info, **data):
-        token = data["token"]
-        return models.Order.objects.get(token=token)
-
-
-class OrderUpdatePrivateMeta(UpdateMetaBaseMutation):
-    class Meta:
-        description = "Updates private meta for order."
-        model = models.Order
-        permissions = (OrderPermissions.MANAGE_ORDERS,)
-        public = False
-
-
-class OrderClearMeta(ClearMetaBaseMutation):
-    class Meta:
-        description = "Clears stored metadata value."
-        model = models.Order
-        permissions = (OrderPermissions.MANAGE_ORDERS,)
-        public = True
-
-    class Arguments:
-        token = UUID(description="Token of an object to clear.", required=True)
-        input = MetaPath(
-            description="Fields required to update new or stored metadata item.",
-            required=True,
-        )
+        instance = super().get_instance(info, **data)
+        if instance.status != OrderStatus.UNCONFIRMED:
+            raise ValidationError(
+                {
+                    "id": ValidationError(
+                        "Provided order id belongs to an order with status "
+                        "different than unconfirmed.",
+                        code=OrderErrorCode.INVALID,
+                    )
+                }
+            )
+        return instance
 
     @classmethod
-    def get_instance(cls, info, **data):
-        token = data["token"]
-        return models.Order.objects.get(token=token)
-
-
-class OrderClearPrivateMeta(ClearMetaBaseMutation):
-    class Meta:
-        description = "Clears stored private metadata value."
-        model = models.Order
-        permissions = (OrderPermissions.MANAGE_ORDERS,)
-        public = False
+    @transaction.atomic
+    def perform_mutation(cls, root, info, **data):
+        order = cls.get_instance(info, **data)
+        order.status = OrderStatus.UNFULFILLED
+        order.save(update_fields=["status"])
+        payment = order.get_last_payment()
+        if payment and payment.is_authorized and payment.can_capture():
+            gateway.capture(payment)
+            order_captured(order, info.context.user, payment.total, payment)
+        order_confirmed(order, info.context.user, send_confirmation_email=True)
+        return OrderConfirm(order=order)

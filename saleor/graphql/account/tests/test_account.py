@@ -13,7 +13,6 @@ from django.core.files import File
 from django.core.validators import URLValidator
 from django.test import override_settings
 from freezegun import freeze_time
-from prices import Money
 
 from ....account import events as account_events
 from ....account.error_codes import AccountErrorCode
@@ -25,6 +24,7 @@ from ....order.models import FulfillmentStatus, Order
 from ....product.tests.utils import create_image
 from ...core.utils import str_to_enum
 from ...tests.utils import (
+    assert_graphql_error_with_message,
     assert_no_permission,
     get_graphql_content,
     get_multipart_request_body,
@@ -374,12 +374,43 @@ def test_query_staff_user(
 
 
 USER_QUERY = """
-    query User($id: ID!) {
-        user(id: $id) {
+    query User($id: ID $email: String) {
+        user(id: $id, email: $email) {
+            id
             email
         }
     }
 """
+
+
+def test_query_user_by_email_address(
+    user_api_client, customer_user, permission_manage_users
+):
+    email = customer_user.email
+    variables = {"email": email}
+    response = user_api_client.post_graphql(
+        USER_QUERY, variables, permissions=[permission_manage_users]
+    )
+    content = get_graphql_content(response)
+    data = content["data"]["user"]
+    assert customer_user.email == data["email"]
+
+
+def test_query_user_by_id_and_email(
+    user_api_client, customer_user, permission_manage_users
+):
+    email = customer_user.email
+    id = graphene.Node.to_global_id("User", customer_user.id)
+    variables = {
+        "id": id,
+        "email": email,
+    }
+    response = user_api_client.post_graphql(
+        USER_QUERY, variables, permissions=[permission_manage_users]
+    )
+    assert_graphql_error_with_message(
+        response, "Argument 'id' cannot be combined with 'email'"
+    )
 
 
 def test_customer_can_not_see_other_users_data(user_api_client, staff_user):
@@ -606,6 +637,116 @@ def test_me_query_checkout(user_api_client, checkout):
     content = get_graphql_content(response)
     data = content["data"]["me"]
     assert data["checkout"]["token"] == str(checkout.token)
+
+
+def test_me_query_checkout_with_inactive_channel(user_api_client, checkout):
+    user = user_api_client.user
+    channel = checkout.channel
+    channel.is_active = False
+    channel.save()
+    checkout.user = user
+    checkout.save()
+
+    response = user_api_client.post_graphql(ME_QUERY)
+    content = get_graphql_content(response)
+    data = content["data"]["me"]
+    assert not data["checkout"]
+
+
+QUERY_ME_CHECKOUT_TOKENS = """
+query getCheckoutTokens($channel: String) {
+  me {
+    checkoutTokens(channel: $channel)
+  }
+}
+"""
+
+
+def test_me_checkout_tokens_without_channel_param(
+    user_api_client, checkouts_assigned_to_customer
+):
+    # given
+    checkouts = checkouts_assigned_to_customer
+
+    # when
+    response = user_api_client.post_graphql(QUERY_ME_CHECKOUT_TOKENS)
+
+    # then
+    content = get_graphql_content(response)
+    data = content["data"]["me"]
+    assert len(data["checkoutTokens"]) == len(checkouts)
+    for checkout in checkouts:
+        assert str(checkout.token) in data["checkoutTokens"]
+
+
+def test_me_checkout_tokens_without_channel_param_inactive_channel(
+    user_api_client, channel_PLN, checkouts_assigned_to_customer
+):
+    # given
+    channel_PLN.is_active = False
+    channel_PLN.save()
+    checkouts = checkouts_assigned_to_customer
+
+    # when
+    response = user_api_client.post_graphql(QUERY_ME_CHECKOUT_TOKENS)
+
+    # then
+    content = get_graphql_content(response)
+    data = content["data"]["me"]
+    assert str(checkouts[0].token) in data["checkoutTokens"]
+    assert not str(checkouts[1].token) in data["checkoutTokens"]
+
+
+def test_me_checkout_tokens_with_channel(
+    user_api_client, channel_USD, checkouts_assigned_to_customer
+):
+    # given
+    checkouts = checkouts_assigned_to_customer
+
+    # when
+    response = user_api_client.post_graphql(
+        QUERY_ME_CHECKOUT_TOKENS, {"channel": channel_USD.slug}
+    )
+
+    # then
+    content = get_graphql_content(response)
+    data = content["data"]["me"]
+    assert str(checkouts[0].token) in data["checkoutTokens"]
+    assert not str(checkouts[1].token) in data["checkoutTokens"]
+
+
+def test_me_checkout_tokens_with_inactive_channel(
+    user_api_client, channel_USD, checkouts_assigned_to_customer
+):
+    # given
+    channel_USD.is_active = False
+    channel_USD.save()
+
+    # when
+    response = user_api_client.post_graphql(
+        QUERY_ME_CHECKOUT_TOKENS, {"channel": channel_USD.slug}
+    )
+
+    # then
+    content = get_graphql_content(response)
+    data = content["data"]["me"]
+    assert not data["checkoutTokens"]
+
+
+def test_me_checkout_tokens_with_not_existing_channel(
+    user_api_client, checkouts_assigned_to_customer
+):
+    # given
+
+    # when
+    response = user_api_client.post_graphql(
+        QUERY_ME_CHECKOUT_TOKENS, {"channel": "Not-existing"}
+    )
+
+    # then
+    content = get_graphql_content(response)
+    data = content["data"]["me"]
+    assert not data["checkoutTokens"]
 
 
 def test_me_with_cancelled_fulfillments(
@@ -2025,7 +2166,10 @@ def test_staff_update_duplicated_input_items(
 
 
 def test_staff_update_doesnt_change_existing_avatar(
-    staff_api_client, permission_manage_staff, media_root, staff_users,
+    staff_api_client,
+    permission_manage_staff,
+    media_root,
+    staff_users,
 ):
     query = STAFF_UPDATE_MUTATIONS
 
@@ -3064,6 +3208,27 @@ def test_account_reset_password_invalid_email(
 
 
 @patch("saleor.account.emails._send_password_reset_email")
+def test_account_reset_password_user_is_inactive(
+    send_password_reset_email_mock, user_api_client, customer_user
+):
+    user = customer_user
+    user.is_active = False
+    user.save()
+
+    variables = {
+        "email": customer_user.email,
+        "redirectUrl": "https://www.example.com",
+    }
+    response = user_api_client.post_graphql(REQUEST_PASSWORD_RESET_MUTATION, variables)
+    content = get_graphql_content(response)
+    data = content["data"]["requestPasswordReset"]
+    assert data["errors"] == [
+        {"field": "email", "message": "User with this email is inactive"}
+    ]
+    assert not send_password_reset_email_mock.called
+
+
+@patch("saleor.account.emails._send_password_reset_email")
 def test_account_reset_password_storefront_hosts_not_allowed(
     send_password_reset_email_mock, user_api_client, customer_user
 ):
@@ -3445,11 +3610,12 @@ def test_query_customers_with_filter_placed_orders(
     staff_api_client,
     permission_manage_users,
     customer_user,
+    channel_USD,
 ):
-    Order.objects.create(user=customer_user)
+    Order.objects.create(user=customer_user, channel=channel_USD)
     second_customer = User.objects.create(email="second_example@example.com")
     with freeze_time("2012-01-14 11:00:00"):
-        Order.objects.create(user=second_customer)
+        Order.objects.create(user=second_customer, channel=channel_USD)
     variables = {"filter": customer_filter}
     response = staff_api_client.post_graphql(
         query_customer_with_filter, variables, permissions=[permission_manage_users]
@@ -3505,60 +3671,18 @@ def test_query_customers_with_filter_placed_orders_(
     staff_api_client,
     permission_manage_users,
     customer_user,
+    channel_USD,
 ):
     Order.objects.bulk_create(
         [
-            Order(user=customer_user, token=str(uuid.uuid4())),
-            Order(user=customer_user, token=str(uuid.uuid4())),
-            Order(user=customer_user, token=str(uuid.uuid4())),
+            Order(user=customer_user, token=str(uuid.uuid4()), channel=channel_USD),
+            Order(user=customer_user, token=str(uuid.uuid4()), channel=channel_USD),
+            Order(user=customer_user, token=str(uuid.uuid4()), channel=channel_USD),
         ]
     )
     second_customer = User.objects.create(email="second_example@example.com")
     with freeze_time("2012-01-14 11:00:00"):
-        Order.objects.create(user=second_customer)
-    variables = {"filter": customer_filter}
-    response = staff_api_client.post_graphql(
-        query_customer_with_filter, variables, permissions=[permission_manage_users]
-    )
-    content = get_graphql_content(response)
-    users = content["data"]["customers"]["edges"]
-
-    assert len(users) == count
-
-
-@pytest.mark.parametrize(
-    "customer_filter, count",
-    [
-        ({"moneySpent": {"gte": 16, "lte": 25}}, 1),
-        ({"moneySpent": {"gte": 15, "lte": 26}}, 2),
-        ({"moneySpent": {"gte": 0}}, 2),
-        ({"moneySpent": {"lte": 16}}, 1),
-    ],
-)
-def test_query_customers_with_filter_placed_orders__(
-    customer_filter,
-    count,
-    query_customer_with_filter,
-    staff_api_client,
-    permission_manage_users,
-    customer_user,
-):
-    second_customer = User.objects.create(email="second_example@example.com")
-    Order.objects.bulk_create(
-        [
-            Order(
-                user=customer_user,
-                token=str(uuid.uuid4()),
-                total_gross=Money(15, "USD"),
-            ),
-            Order(
-                user=second_customer,
-                token=str(uuid.uuid4()),
-                total_gross=Money(25, "USD"),
-            ),
-        ]
-    )
-
+        Order.objects.create(user=second_customer, channel=channel_USD)
     variables = {"filter": customer_filter}
     response = staff_api_client.post_graphql(
         query_customer_with_filter, variables, permissions=[permission_manage_users]
@@ -3596,7 +3720,7 @@ QUERY_CUSTOMERS_WITH_SORT = """
     ],
 )
 def test_query_customers_with_sort(
-    customer_sort, result_order, staff_api_client, permission_manage_users,
+    customer_sort, result_order, staff_api_client, permission_manage_users, channel_USD
 ):
     User.objects.bulk_create(
         [
@@ -3623,7 +3747,9 @@ def test_query_customers_with_sort(
             ),
         ]
     )
-    Order.objects.create(user=User.objects.get(email="zordon01@example.com"))
+    Order.objects.create(
+        user=User.objects.get(email="zordon01@example.com"), channel=channel_USD
+    )
     variables = {"sort_by": customer_sort}
     staff_api_client.user.user_permissions.add(permission_manage_users)
     response = staff_api_client.post_graphql(QUERY_CUSTOMERS_WITH_SORT, variables)
@@ -3644,6 +3770,9 @@ def test_query_customers_with_sort(
         ({"search": "Doe"}, 1),  # default_shipping_address__last_name
         ({"search": "wroc"}, 1),  # default_shipping_address__city
         ({"search": "pl"}, 2),  # default_shipping_address__country, email
+        ({"search": "+48713988102"}, 1),
+        ({"search": "7139881"}, 1),
+        ({"search": "+48713"}, 1),
     ],
 )
 def test_query_customer_members_with_filter_search(
@@ -3713,7 +3842,9 @@ def test_query_staff_members_with_filter_status(
 
 
 def test_query_staff_members_app_no_permission(
-    query_staff_users_with_filter, app_api_client, permission_manage_staff,
+    query_staff_users_with_filter,
+    app_api_client,
+    permission_manage_staff,
 ):
 
     User.objects.bulk_create(
@@ -3815,7 +3946,7 @@ QUERY_STAFF_USERS_WITH_SORT = """
     ],
 )
 def test_query_staff_members_with_sort(
-    customer_sort, result_order, staff_api_client, permission_manage_staff
+    customer_sort, result_order, staff_api_client, permission_manage_staff, channel_USD
 ):
     User.objects.bulk_create(
         [
@@ -3842,7 +3973,9 @@ def test_query_staff_members_with_sort(
             ),
         ]
     )
-    Order.objects.create(user=User.objects.get(email="zordon01@example.com"))
+    Order.objects.create(
+        user=User.objects.get(email="zordon01@example.com"), channel=channel_USD
+    )
     variables = {"sort_by": customer_sort}
     staff_api_client.user.user_permissions.add(permission_manage_staff)
     response = staff_api_client.post_graphql(QUERY_STAFF_USERS_WITH_SORT, variables)
@@ -3989,7 +4122,9 @@ def test_address_query_as_not_owner(
 
 
 def test_address_query_as_app_with_permission(
-    app_api_client, address_other_country, permission_manage_users,
+    app_api_client,
+    address_other_country,
+    permission_manage_users,
 ):
     variables = {"id": graphene.Node.to_global_id("Address", address_other_country.pk)}
     response = app_api_client.post_graphql(

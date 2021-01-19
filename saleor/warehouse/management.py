@@ -9,12 +9,14 @@ from ..core.exceptions import AllocationError, InsufficientStock
 from .models import Allocation, Stock, Warehouse
 
 if TYPE_CHECKING:
-    from ..order.models import OrderLine, Order
+    from ..order.models import Order, OrderLine
 
 
 @transaction.atomic
 def allocate_stock(
-    order_line: "OrderLine", country_code: str, quantity: int,
+    order_line: "OrderLine",
+    country_code: str,
+    quantity: int,
 ):
     """Allocate stocks for given `order_line` in given country.
 
@@ -32,7 +34,10 @@ def allocate_stock(
     )
 
     quantity_allocation_list = list(
-        Allocation.objects.filter(stock__in=stocks, quantity_allocated__gt=0,)
+        Allocation.objects.filter(
+            stock__in=stocks,
+            quantity_allocated__gt=0,
+        )
         .values("stock")
         .annotate(Sum("quantity_allocated"))
     )
@@ -82,7 +87,12 @@ def deallocate_stock(order_line: "OrderLine", quantity: int):
     """
     allocations = (
         order_line.allocations.select_related("stock")
-        .select_for_update(of=("self", "stock",))
+        .select_for_update(
+            of=(
+                "self",
+                "stock",
+            )
+        )
         .order_by("stock__pk")
     )
     quantity_dealocated = 0

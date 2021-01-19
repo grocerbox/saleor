@@ -2,6 +2,8 @@ import pytest
 from measurement.measures import Weight
 from prices import Money, TaxedMoney
 
+from ...checkout.utils import fetch_checkout_lines
+from ...plugins.manager import get_plugins_manager
 from ...product.models import Category
 from .. import calculations, utils
 from ..models import Checkout
@@ -9,34 +11,16 @@ from ..utils import add_variant_to_checkout
 
 
 @pytest.fixture()
-def anonymous_checkout(db):
-    return Checkout.objects.get_or_create(user=None)[0]
-
-
-def test_get_or_create_user_checkout(
-    customer_user, anonymous_checkout, user_checkout, admin_user
-):
-    checkout = utils.get_user_checkout(customer_user, auto_create=True)[0]
-    assert Checkout.objects.all().count() == 2
-    assert checkout == user_checkout
-
-    # test against creating new checkouts
-    Checkout.objects.create(user=admin_user)
-    queryset = Checkout.objects.all()
-    checkouts = list(queryset)
-    checkout = utils.get_user_checkout(admin_user, auto_create=True)[0]
-    assert Checkout.objects.all().count() == 3
-    assert checkout in checkouts
-    assert checkout.user == admin_user
+def anonymous_checkout(db, channel_USD):
+    return Checkout.objects.get_or_create(user=None, channel=channel_USD)[0]
 
 
 def test_get_user_checkout(
     anonymous_checkout, user_checkout, admin_user, customer_user
 ):
-    checkout, created = utils.get_user_checkout(customer_user)
+    checkout = utils.get_user_checkout(customer_user)
     assert Checkout.objects.all().count() == 2
     assert checkout == user_checkout
-    assert not created
 
 
 def test_adding_zero_quantity(checkout, product):
@@ -52,8 +36,15 @@ def test_adding_same_variant(checkout, product):
     assert checkout.lines.count() == 1
     assert checkout.quantity == 3
     subtotal = TaxedMoney(Money("30.00", "USD"), Money("30.00", "USD"))
+    lines = fetch_checkout_lines(checkout)
+    manager = get_plugins_manager()
     assert (
-        calculations.checkout_subtotal(checkout=checkout, lines=list(checkout))
+        calculations.checkout_subtotal(
+            manager=manager,
+            checkout=checkout,
+            lines=lines,
+            address=checkout.shipping_address,
+        )
         == subtotal
     )
 
@@ -94,15 +85,26 @@ def test_get_prices_of_discounted_specific_product(
     line = checkout.lines.first()
     product = line.variant.product
     category = product.category
+    channel = checkout.channel
+    variant_channel_listing = line.variant.channel_listings.get(channel=channel)
 
     product.collections.add(collection)
     voucher.products.add(product)
     voucher.collections.add(collection)
     voucher.categories.add(category)
 
-    prices = utils.get_prices_of_discounted_specific_product(checkout, voucher)
+    manager = get_plugins_manager()
+    lines = fetch_checkout_lines(checkout)
+    prices = utils.get_prices_of_discounted_specific_product(
+        manager, checkout, lines, voucher, channel
+    )
 
-    excepted_value = [line.variant.get_price() for item in range(line.quantity)]
+    excepted_value = [
+        line.variant.get_price(
+            product, [collection], channel, variant_channel_listing, []
+        )
+        for item in range(line.quantity)
+    ]
 
     assert prices == excepted_value
 
@@ -115,13 +117,22 @@ def test_get_prices_of_discounted_specific_product_only_product(
     line = checkout.lines.first()
     product = line.variant.product
     product2 = product_with_default_variant
+    channel = checkout.channel
+    variant_channel_listing = line.variant.channel_listings.get(channel=channel)
 
     add_variant_to_checkout(checkout, product2.variants.get(), 1)
     voucher.products.add(product)
 
-    prices = utils.get_prices_of_discounted_specific_product(checkout, voucher)
+    manager = get_plugins_manager()
+    lines = fetch_checkout_lines(checkout)
+    prices = utils.get_prices_of_discounted_specific_product(
+        manager, checkout, lines, voucher, channel
+    )
 
-    excepted_value = [line.variant.get_price() for item in range(line.quantity)]
+    excepted_value = [
+        line.variant.get_price(product, [], channel, variant_channel_listing, [])
+        for item in range(line.quantity)
+    ]
 
     assert checkout.lines.count() > 1
     assert prices == excepted_value
@@ -138,14 +149,25 @@ def test_get_prices_of_discounted_specific_product_only_collection(
     line = checkout.lines.first()
     product = line.variant.product
     product2 = product_with_default_variant
+    channel = checkout.channel
+    variant_channel_listing = line.variant.channel_listings.get(channel=channel)
 
     add_variant_to_checkout(checkout, product2.variants.get(), 1)
     product.collections.add(collection)
     voucher.collections.add(collection)
 
-    prices = utils.get_prices_of_discounted_specific_product(checkout, voucher)
+    manager = get_plugins_manager()
+    lines = fetch_checkout_lines(checkout)
+    prices = utils.get_prices_of_discounted_specific_product(
+        manager, checkout, lines, voucher, checkout.channel
+    )
 
-    excepted_value = [line.variant.get_price() for item in range(line.quantity)]
+    excepted_value = [
+        line.variant.get_price(
+            product, [collection], channel, variant_channel_listing, []
+        )
+        for item in range(line.quantity)
+    ]
 
     assert checkout.lines.count() > 1
     assert prices == excepted_value
@@ -161,15 +183,24 @@ def test_get_prices_of_discounted_specific_product_only_category(
     product2 = product_with_default_variant
     category = product.category
     category2 = Category.objects.create(name="Cat", slug="cat")
+    channel = checkout.channel
+    variant_channel_listing = line.variant.channel_listings.get(channel=channel)
 
     product2.category = category2
     product2.save()
     add_variant_to_checkout(checkout, product2.variants.get(), 1)
     voucher.categories.add(category)
 
-    prices = utils.get_prices_of_discounted_specific_product(checkout, voucher)
+    manager = get_plugins_manager()
+    lines = fetch_checkout_lines(checkout)
+    prices = utils.get_prices_of_discounted_specific_product(
+        manager, checkout, lines, voucher, channel
+    )
 
-    excepted_value = [line.variant.get_price() for item in range(line.quantity)]
+    excepted_value = [
+        line.variant.get_price(product, [], channel, variant_channel_listing, [])
+        for item in range(line.quantity)
+    ]
 
     assert checkout.lines.count() > 1
     assert prices == excepted_value
@@ -181,10 +212,20 @@ def test_get_prices_of_discounted_specific_product_all_products(
     checkout = checkout_with_item
     voucher = voucher_specific_product_type
     line = checkout.lines.first()
+    product = line.variant.product
+    channel = checkout.channel
+    variant_channel_listing = line.variant.channel_listings.get(channel=channel)
 
-    prices = utils.get_prices_of_discounted_specific_product(checkout, voucher)
+    manager = get_plugins_manager()
+    lines = fetch_checkout_lines(checkout)
+    prices = utils.get_prices_of_discounted_specific_product(
+        manager, checkout, lines, voucher, channel
+    )
 
-    excepted_value = [line.variant.get_price() for item in range(line.quantity)]
+    excepted_value = [
+        line.variant.get_price(product, [], channel, variant_channel_listing, [])
+        for item in range(line.quantity)
+    ]
 
     assert prices == excepted_value
 

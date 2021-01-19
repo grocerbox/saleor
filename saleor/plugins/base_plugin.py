@@ -1,15 +1,16 @@
 from copy import copy
 from decimal import Decimal
-from typing import TYPE_CHECKING, Any, List, Optional, Union
+from typing import TYPE_CHECKING, Any, Iterable, List, Optional, Union
 
 from django.core.handlers.wsgi import WSGIRequest
 from django.http import HttpResponse
 from django_countries.fields import Country
-from prices import Money, MoneyRange, TaxedMoney, TaxedMoneyRange
+from prices import Money, TaxedMoney
 
 from ..payment.interface import (
     CustomerSource,
     GatewayResponse,
+    InitializedPaymentResponse,
     PaymentData,
     PaymentGateway,
 )
@@ -17,13 +18,21 @@ from .models import PluginConfiguration
 
 if TYPE_CHECKING:
     # flake8: noqa
-    from ..core.taxes import TaxType
-    from ..checkout.models import Checkout, CheckoutLine
-    from ..discount import DiscountInfo
-    from ..product.models import Product, ProductType
     from ..account.models import Address, User
-    from ..order.models import Fulfillment, OrderLine, Order
+    from ..channel.models import Channel
+    from ..checkout import CheckoutLineInfo
+    from ..checkout.models import Checkout, CheckoutLine
+    from ..core.taxes import TaxType
+    from ..discount import DiscountInfo
     from ..invoice.models import Invoice
+    from ..order.models import Fulfillment, Order, OrderLine
+    from ..product.models import (
+        Collection,
+        Product,
+        ProductType,
+        ProductVariant,
+        ProductVariantChannelListing,
+    )
 
 
 PluginConfigurationType = List[dict]
@@ -33,12 +42,14 @@ class ConfigurationTypeField:
     STRING = "String"
     BOOLEAN = "Boolean"
     SECRET = "Secret"
+    SECRET_MULTILINE = "SecretMultiline"
     PASSWORD = "Password"
     CHOICES = [
         (STRING, "Field is a String"),
         (BOOLEAN, "Field is a Boolean"),
         (SECRET, "Field is a Secret"),
         (PASSWORD, "Field is a Password"),
+        (SECRET_MULTILINE, "Field is a Secret multiline"),
     ]
 
 
@@ -83,7 +94,8 @@ class BasePlugin:
     def calculate_checkout_total(
         self,
         checkout: "Checkout",
-        lines: List["CheckoutLine"],
+        lines: List["CheckoutLineInfo"],
+        address: Optional["Address"],
         discounts: List["DiscountInfo"],
         previous_value: TaxedMoney,
     ) -> TaxedMoney:
@@ -97,7 +109,8 @@ class BasePlugin:
     def calculate_checkout_subtotal(
         self,
         checkout: "Checkout",
-        lines: List["CheckoutLine"],
+        lines: List["CheckoutLineInfo"],
+        address: Optional["Address"],
         discounts: List["DiscountInfo"],
         previous_value: TaxedMoney,
     ) -> TaxedMoney:
@@ -111,7 +124,8 @@ class BasePlugin:
     def calculate_checkout_shipping(
         self,
         checkout: "Checkout",
-        lines: List["CheckoutLine"],
+        lines: List["CheckoutLineInfo"],
+        address: Optional["Address"],
         discounts: List["DiscountInfo"],
         previous_value: TaxedMoney,
     ) -> TaxedMoney:
@@ -132,9 +146,17 @@ class BasePlugin:
         """
         return NotImplemented
 
+    # TODO: Add information about this change to `breaking changes in changelog`
     def calculate_checkout_line_total(
         self,
+        checkout: "Checkout",
         checkout_line: "CheckoutLine",
+        variant: "ProductVariant",
+        product: "Product",
+        collections: List["Collection"],
+        address: Optional["Address"],
+        channel: "Channel",
+        channel_listing: "ProductVariantChannelListing",
         discounts: List["DiscountInfo"],
         previous_value: TaxedMoney,
     ) -> TaxedMoney:
@@ -143,6 +165,12 @@ class BasePlugin:
         Overwrite this method if you need to apply specific logic for the calculation
         of a checkout line total. Return TaxedMoney.
         """
+        return NotImplemented
+
+    def calculate_checkout_line_unit_price(
+        self, total_line_price: TaxedMoney, quantity: int, previous_value: TaxedMoney
+    ):
+        """Calculate checkout line unit price."""
         return NotImplemented
 
     def calculate_order_line_unit(
@@ -155,6 +183,38 @@ class BasePlugin:
         Overwrite this method if you need to apply specific logic for the calculation
         of an order line unit price.
         """
+        return NotImplemented
+
+    def get_checkout_line_tax_rate(
+        self,
+        checkout: "Checkout",
+        checkout_line_info: "CheckoutLineInfo",
+        address: Optional["Address"],
+        discounts: Iterable["DiscountInfo"],
+        previous_value: Decimal,
+    ) -> Decimal:
+        return NotImplemented
+
+    def get_order_line_tax_rate(
+        self,
+        order: "Order",
+        product: "Product",
+        address: Optional["Address"],
+        previous_value: Decimal,
+    ) -> Decimal:
+        return NotImplemented
+
+    def get_checkout_shipping_tax_rate(
+        self,
+        checkout: "Checkout",
+        lines: Iterable["CheckoutLineInfo"],
+        address: Optional["Address"],
+        discounts: Iterable["DiscountInfo"],
+        previous_value: Decimal,
+    ):
+        return NotImplemented
+
+    def get_order_shipping_tax_rate(self, order: "Order", previous_value: Decimal):
         return NotImplemented
 
     def get_tax_rate_type_choices(
@@ -174,15 +234,6 @@ class BasePlugin:
 
         It is used only by the old storefront. The returned value determines if
         storefront should append info to the price about "including/excluding X% VAT".
-        """
-        return NotImplemented
-
-    def apply_taxes_to_shipping_price_range(
-        self, prices: MoneyRange, country: Country, previous_value: TaxedMoneyRange
-    ) -> TaxedMoneyRange:
-        """Provide the estimation of shipping costs based on country.
-
-        It is used only by the old storefront in the cart view.
         """
         return NotImplemented
 
@@ -224,6 +275,14 @@ class BasePlugin:
 
         Overwrite this method if you need to trigger specific logic after an order is
         created.
+        """
+        return NotImplemented
+
+    def order_confirmed(self, order: "Order", previous_value: Any):
+        """Trigger when order is confirmed by staff.
+
+        Overwrite this method if you need to trigger specific logic after an order is
+        confirmed.
         """
         return NotImplemented
 
@@ -368,6 +427,11 @@ class BasePlugin:
         """Triggered when ShopFetchTaxRates mutation is called."""
         return NotImplemented
 
+    def initialize_payment(
+        self, payment_data: dict, previous_value
+    ) -> "InitializedPaymentResponse":
+        return NotImplemented
+
     def authorize_payment(
         self, payment_information: "PaymentData", previous_value
     ) -> "GatewayResponse":
@@ -432,7 +496,9 @@ class BasePlugin:
         )
 
     def get_payment_gateway_for_checkout(
-        self, checkout: "Checkout", previous_value,
+        self,
+        checkout: "Checkout",
+        previous_value,
     ) -> Optional["PaymentGateway"]:
         return self.get_payment_gateway(checkout.currency, previous_value)
 

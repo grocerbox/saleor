@@ -3,10 +3,8 @@ from typing import Optional
 import graphene
 import jwt
 from django.core.exceptions import ValidationError
-from django.middleware.csrf import (  # type: ignore
-    _compare_masked_tokens,
-    _get_new_csrf_token,
-)
+from django.middleware.csrf import _compare_masked_tokens  # type: ignore
+from django.middleware.csrf import _get_new_csrf_token
 from django.utils import timezone
 from django.utils.crypto import get_random_string
 from graphene.types.generic import GenericScalar
@@ -31,7 +29,7 @@ from ..types import User
 def get_payload(token):
     try:
         payload = jwt_decode(token)
-    except jwt.ExpiredSignature:
+    except jwt.ExpiredSignatureError:
         raise ValidationError(
             "Signature has expired", code=AccountErrorCode.JWT_SIGNATURE_EXPIRED.value
         )

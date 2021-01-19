@@ -17,6 +17,7 @@ def test_retrieve_variant_list(
     warehouse,
     warehouse_no_shipping_zone,
     shipping_zone_without_countries,
+    channel_USD,
 ):
     query = """
         fragment BasicProductFields on Product {
@@ -35,8 +36,6 @@ def test_retrieve_variant_list(
           id
           sku
           name
-          stockQuantity
-          isAvailable
           pricing {
             discountLocalCurrency {
               currency
@@ -80,12 +79,11 @@ def test_retrieve_variant_list(
           }
         }
 
-        query VariantList($ids: [ID!]) {
-          productVariants(ids: $ids, first: 100) {
+        query VariantList($ids: [ID!], $channel: String) {
+          productVariants(ids: $ids, first: 100, channel: $channel) {
             edges {
               node {
                 ...ProductVariantFields
-                stockQuantity
                 quantityAvailable
                 quantityAvailablePl: quantityAvailable(countryCode: PL)
                 quantityAvailableUS: quantityAvailable(countryCode: US)
@@ -115,7 +113,8 @@ def test_retrieve_variant_list(
         "ids": [
             graphene.Node.to_global_id("ProductVariant", variant.pk)
             for variant in product_variant_list
-        ]
+        ],
+        "channel": channel_USD.slug,
     }
     get_graphql_content(api_client.post_graphql(query, variables))
 
@@ -161,7 +160,6 @@ def test_product_variant_bulk_create(
                 {"id": color_attribute_id, "values": ["red"]},
                 {"id": size_attribute_id, "values": ["big"]},
             ],
-            "price": 10,
         }
     ]
     variables = {"productId": product_id, "variants": variants}

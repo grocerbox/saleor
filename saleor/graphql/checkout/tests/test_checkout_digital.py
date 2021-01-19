@@ -5,7 +5,7 @@ import pytest
 from ....account.models import Address
 from ....checkout.error_codes import CheckoutErrorCode
 from ....checkout.models import Checkout
-from ....checkout.utils import add_variant_to_checkout
+from ....checkout.utils import add_variant_to_checkout, fetch_checkout_lines
 from ...checkout.mutations import update_checkout_shipping_method_if_invalid
 from ...tests.utils import get_graphql_content
 from .test_checkout import (
@@ -19,7 +19,11 @@ from .test_checkout import (
 
 @pytest.mark.parametrize("with_shipping_address", (True, False))
 def test_create_checkout(
-    api_client, digital_content, graphql_address_data, with_shipping_address
+    api_client,
+    digital_content,
+    graphql_address_data,
+    with_shipping_address,
+    channel_USD,
 ):
     """Test creating a checkout with a shipping address gets the address ignored."""
 
@@ -29,6 +33,7 @@ def test_create_checkout(
     variant_id = graphene.Node.to_global_id("ProductVariant", variant.pk)
 
     checkout_input = {
+        "channel": channel_USD.slug,
         "lines": [{"quantity": 1, "variantId": variant_id}],
         "email": "customer@example.com",
     }
@@ -78,7 +83,8 @@ def test_checkout_has_no_available_shipping_methods(
     checkout.shipping_address = address
     checkout.save(update_fields=["shipping_address"])
 
-    response = api_client.post_graphql(query, {"token": checkout.token})
+    variables = {"token": checkout.token}
+    response = api_client.post_graphql(query, variables)
     content = get_graphql_content(response)
     data = content["data"]["checkout"]
 
@@ -153,7 +159,8 @@ def test_remove_shipping_method_if_only_digital_in_checkout(
     checkout.save()
 
     assert checkout.shipping_method
-    update_checkout_shipping_method_if_invalid(checkout, list(checkout), None)
+    lines = fetch_checkout_lines(checkout)
+    update_checkout_shipping_method_if_invalid(checkout, lines, None)
 
     checkout.refresh_from_db()
     assert not checkout.shipping_method

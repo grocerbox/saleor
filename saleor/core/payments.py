@@ -6,11 +6,11 @@ if TYPE_CHECKING:
     from ..checkout.models import Checkout, CheckoutLine
     from ..discount import DiscountInfo
     from ..payment.interface import (
-        PaymentData,
-        GatewayResponse,
-        TokenConfig,
         CustomerSource,
+        GatewayResponse,
+        PaymentData,
         PaymentGateway,
+        TokenConfig,
     )
 
 
@@ -23,7 +23,8 @@ class PaymentInterface(ABC):
 
     @abstractmethod
     def checkout_available_payment_gateways(
-        self, checkout: "Checkout",
+        self,
+        checkout: "Checkout",
     ) -> List["PaymentGateway"]:
         pass
 

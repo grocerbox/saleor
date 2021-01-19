@@ -10,6 +10,7 @@ import jaeger_client
 import jaeger_client.config
 import pkg_resources
 import sentry_sdk
+import sentry_sdk.utils
 from django.core.exceptions import ImproperlyConfigured
 from django.core.management.utils import get_random_secret_key
 from pytimeparse import parse
@@ -94,6 +95,7 @@ LANGUAGES = [
     ("is", "Icelandic"),
     ("it", "Italian"),
     ("ja", "Japanese"),
+    ("ka", "Georgian"),
     ("km", "Khmer"),
     ("ko", "Korean"),
     ("lt", "Lithuanian"),
@@ -233,6 +235,8 @@ INSTALLED_APPS = [
     "saleor.discount",
     "saleor.giftcard",
     "saleor.product",
+    "saleor.attribute",
+    "saleor.channel",
     "saleor.checkout",
     "saleor.core",
     "saleor.csv",
@@ -244,7 +248,6 @@ INSTALLED_APPS = [
     "saleor.shipping",
     "saleor.search",
     "saleor.site",
-    "saleor.data_feeds",
     "saleor.page",
     "saleor.payment",
     "saleor.warehouse",
@@ -336,7 +339,7 @@ LOGGING = {
         "saleor": {"level": "DEBUG", "propagate": True},
         "saleor.graphql.errors.handled": {
             "handlers": ["default"],
-            "level": "ERROR",
+            "level": "INFO",
             "propagate": False,
         },
         "graphql.execution.utils": {"propagate": False},
@@ -362,9 +365,6 @@ DEFAULT_CURRENCY_CODE_LENGTH = 3
 # sender email address.
 # Following the recommendation of https://tools.ietf.org/html/rfc5322#section-2.1.1
 DEFAULT_MAX_EMAIL_DISPLAY_NAME_LENGTH = 78
-
-# note: having multiple currencies is not supported yet
-AVAILABLE_CURRENCIES = [DEFAULT_CURRENCY]
 
 COUNTRIES_OVERRIDE = {"EU": "European Union"}
 
@@ -415,6 +415,10 @@ GS_PROJECT_ID = os.environ.get("GS_PROJECT_ID")
 GS_STORAGE_BUCKET_NAME = os.environ.get("GS_STORAGE_BUCKET_NAME")
 GS_MEDIA_BUCKET_NAME = os.environ.get("GS_MEDIA_BUCKET_NAME")
 GS_AUTO_CREATE_BUCKET = get_bool_from_env("GS_AUTO_CREATE_BUCKET", False)
+GS_QUERYSTRING_AUTH = get_bool_from_env("GS_QUERYSTRING_AUTH", False)
+GS_DEFAULT_ACL = os.environ.get("GS_DEFAULT_ACL", None)
+GS_MEDIA_CUSTOM_ENDPOINT = os.environ.get("GS_MEDIA_CUSTOM_ENDPOINT", None)
+GS_EXPIRATION = os.environ.get("GS_EXPIRATION", None)
 
 # If GOOGLE_APPLICATION_CREDENTIALS is set there is no need to load OAuth token
 # See https://django-storages.readthedocs.io/en/latest/backends/gcloud.html
@@ -482,13 +486,15 @@ CELERY_RESULT_BACKEND = os.environ.get("CELERY_RESULT_BACKEND", None)
 # e.g. HTTP_CF_Connecting_IP for Cloudflare or X_FORWARDED_FOR
 REAL_IP_ENVIRON = os.environ.get("REAL_IP_ENVIRON", "REMOTE_ADDR")
 
-# The maximum length of a graphql query to log in tracings
-OPENTRACING_MAX_QUERY_LENGTH_LOG = 2000
-
 # Slugs for menus precreated in Django migrations
 DEFAULT_MENUS = {"top_menu_name": "navbar", "bottom_menu_name": "footer"}
 
+# Slug for channel precreated in Django migrations
+DEFAULT_CHANNEL_SLUG = os.environ.get("DEFAULT_CHANNEL_SLUG", "default-channel")
+
+
 #  Sentry
+sentry_sdk.utils.MAX_STRING_LENGTH = 4096
 SENTRY_DSN = os.environ.get("SENTRY_DSN")
 if SENTRY_DSN:
     sentry_sdk.init(
@@ -517,6 +523,7 @@ PLUGINS = [
     "saleor.payment.gateways.braintree.plugin.BraintreeGatewayPlugin",
     "saleor.payment.gateways.razorpay.plugin.RazorpayGatewayPlugin",
     "saleor.payment.gateways.adyen.plugin.AdyenGatewayPlugin",
+    "saleor.payment.gateways.authorize_net.plugin.AuthorizeNetGatewayPlugin",
     "saleor.plugins.invoicing.plugin.InvoicingPlugin",
 ]
 

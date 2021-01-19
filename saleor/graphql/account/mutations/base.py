@@ -4,7 +4,8 @@ from django.contrib.auth.tokens import default_token_generator
 from django.core.exceptions import ObjectDoesNotExist, ValidationError
 from django.db import transaction
 
-from ....account import events as account_events, models
+from ....account import events as account_events
+from ....account import models
 from ....account.emails import (
     send_set_password_email_with_url,
     send_user_password_reset_email_with_url,
@@ -23,7 +24,6 @@ from ...core.mutations import (
     validation_error_to_error_type,
 )
 from ...core.types.common import AccountError
-from ...meta.deprecated.mutations import ClearMetaBaseMutation, UpdateMetaBaseMutation
 from .jwt import CreateToken
 
 BILLING_ADDRESS_FIELD = "default_billing_address"
@@ -136,6 +136,16 @@ class RequestPasswordReset(BaseMutation):
                     "email": ValidationError(
                         "User with this email doesn't exist",
                         code=AccountErrorCode.NOT_FOUND,
+                    )
+                }
+            )
+
+        if not user.is_active:
+            raise ValidationError(
+                {
+                    "email": ValidationError(
+                        "User with this email is inactive",
+                        code=AccountErrorCode.INACTIVE,
                     )
                 }
             )
@@ -431,23 +441,3 @@ class BaseCustomerCreate(ModelMutation, I18nMixin):
             send_set_password_email_with_url(
                 cleaned_input.get("redirect_url"), instance
             )
-
-
-class UserUpdateMeta(UpdateMetaBaseMutation):
-    class Meta:
-        description = "Updates metadata for user."
-        model = models.User
-        public = True
-        error_type_class = AccountError
-        error_type_field = "account_errors"
-        permissions = (AccountPermissions.MANAGE_USERS,)
-
-
-class UserClearMeta(ClearMetaBaseMutation):
-    class Meta:
-        description = "Clear metadata for user."
-        model = models.User
-        public = True
-        error_type_class = AccountError
-        error_type_field = "account_errors"
-        permissions = (AccountPermissions.MANAGE_USERS,)
