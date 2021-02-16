@@ -565,28 +565,38 @@ def test_query_default_country(user_api_client, settings):
     assert data["country"] == "United States of America"
 
 
-def test_query_geolocalization(user_api_client):
-    query = """
-        query {
-            shop {
-                geolocalization {
-                    country {
-                        code
-                    }
-                }
+AVAILABLE_EXTERNAL_AUTHENTICATIONS_QUERY = """
+    query{
+        shop {
+            availableExternalAuthentications{
+                id
+                name
             }
         }
-    """
-    GERMAN_IP = "79.222.222.22"
-    response = user_api_client.post_graphql(query, HTTP_X_FORWARDED_FOR=GERMAN_IP)
-    content = get_graphql_content(response)
-    data = content["data"]["shop"]["geolocalization"]
-    assert data["country"]["code"] == "DE"
+    }
+"""
 
+
+@pytest.mark.parametrize(
+    "external_auths",
+    [
+        [{"id": "auth1", "name": "Auth-1"}],
+        [{"id": "auth1", "name": "Auth-1"}, {"id": "auth2", "name": "Auth-2"}],
+        [],
+    ],
+)
+def test_query_available_external_authentications(
+    external_auths, user_api_client, monkeypatch
+):
+    monkeypatch.setattr(
+        "saleor.plugins.manager.PluginsManager.list_external_authentications",
+        lambda self, active_only: external_auths,
+    )
+    query = AVAILABLE_EXTERNAL_AUTHENTICATIONS_QUERY
     response = user_api_client.post_graphql(query)
     content = get_graphql_content(response)
-    data = content["data"]["shop"]["geolocalization"]
-    assert data["country"] is None
+    data = content["data"]["shop"]["availableExternalAuthentications"]
+    assert data == external_auths
 
 
 AVAILABLE_PAYMENT_GATEWAYS_QUERY = """

@@ -213,8 +213,6 @@ MIDDLEWARE = [
     "saleor.core.middleware.request_time",
     "saleor.core.middleware.discounts",
     "saleor.core.middleware.google_analytics",
-    "saleor.core.middleware.country",
-    "saleor.core.middleware.currency",
     "saleor.core.middleware.site",
     "saleor.core.middleware.plugins",
     "saleor.core.middleware.jwt_refresh_token_middleware",
@@ -246,7 +244,6 @@ INSTALLED_APPS = [
     "saleor.invoice",
     "saleor.seo",
     "saleor.shipping",
-    "saleor.search",
     "saleor.site",
     "saleor.page",
     "saleor.payment",
@@ -356,7 +353,6 @@ AUTH_PASSWORD_VALIDATORS = [
 ]
 
 DEFAULT_COUNTRY = os.environ.get("DEFAULT_COUNTRY", "US")
-DEFAULT_CURRENCY = os.environ.get("DEFAULT_CURRENCY", "USD")
 DEFAULT_DECIMAL_PLACES = 3
 DEFAULT_MAX_DIGITS = 12
 DEFAULT_CURRENCY_CODE_LENGTH = 3
@@ -465,10 +461,10 @@ PLACEHOLDER_IMAGES = {
 
 DEFAULT_PLACEHOLDER = "images/placeholder255x255.png"
 
-SEARCH_BACKEND = "saleor.search.backends.postgresql"
 
 AUTHENTICATION_BACKENDS = [
     "saleor.core.auth_backend.JSONWebTokenBackend",
+    "saleor.core.auth_backend.PluginBackend",
 ]
 
 # CELERY SETTINGS
@@ -575,6 +571,7 @@ REDIS_URL = os.environ.get("REDIS_URL")
 if REDIS_URL:
     CACHE_URL = os.environ.setdefault("CACHE_URL", REDIS_URL)
 CACHES = {"default": django_cache_url.config()}
+CACHES["default"]["TIMEOUT"] = parse(os.environ.get("CACHE_TIMEOUT", "7 days"))
 
 # Default False because storefront and dashboard don't support expiration of token
 JWT_EXPIRE = get_bool_from_env("JWT_EXPIRE", False)

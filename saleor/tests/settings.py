@@ -26,12 +26,9 @@ SECRET_KEY = "NOTREALLY"
 
 ALLOWED_CLIENT_HOSTS = ["www.example.com"]
 
-DEFAULT_CURRENCY = "USD"
-
 TIME_ZONE = "America/Chicago"
 LANGUAGE_CODE = "en"
 
-SEARCH_BACKEND = "saleor.search.backends.postgresql"
 
 EMAIL_BACKEND = "django.core.mail.backends.locmem.EmailBackend"
 

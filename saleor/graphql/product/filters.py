@@ -3,6 +3,7 @@ from typing import Dict, Iterable, List, Optional
 
 import django_filters
 import graphene
+from django.contrib.postgres.search import SearchQuery, SearchRank
 from django.db.models import Exists, F, OuterRef, Q, Subquery, Sum
 from django.db.models.functions import Coalesce
 from graphene_django.filter import GlobalIDFilter, GlobalIDMultipleChoiceFilter
@@ -13,7 +14,6 @@ from ...attribute.models import (
     Attribute,
 )
 from ...product.models import Category, Collection, Product, ProductType, ProductVariant
-from ...search.backends import picker
 from ...warehouse.models import Stock
 from ..channel.filters import get_channel_slug_from_filter_data
 from ..core.filters import EnumFilter, ListObjectTypeFilter, ObjectTypeFilter
@@ -209,10 +209,30 @@ def filter_stock_availability(qs, _, value):
     return qs
 
 
+def product_search(phrase):
+    """Return matching products for storefront views.
+
+        Name and description is matched using search vector.
+
+    Args:
+        phrase (str): searched phrase
+
+    """
+    query = SearchQuery(phrase, config="english")
+    vector = F("search_vector")
+    ft_in_description_or_name = Q(search_vector=query)
+
+    ft_by_sku = Q(variants__sku__search=phrase)
+    return (
+        Product.objects.annotate(rank=SearchRank(vector, query))
+        .filter((ft_in_description_or_name | ft_by_sku))
+        .order_by("-rank")
+    )
+
+
 def filter_search(qs, _, value):
     if value:
-        search = picker.pick_backend()
-        qs = qs.distinct() & search(value).distinct()
+        qs = product_search(value).distinct() & qs.distinct()
     return qs
 
 
